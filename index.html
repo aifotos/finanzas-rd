@@ -354,9 +354,23 @@ function viewDashboard() {
   // Upcoming payments
   const now=new Date();
   let upcoming=[];
-  state.loans.forEach(l=>{const d=daysUntil(l.dia_pago);if(d<=15) upcoming.push({nombre:l.nombre,monto:l.cuota_mensual,dias:d});});
-  state.creditCards.forEach(c=>{const dl=getDeadline(c.fecha_corte,c.dias_limite_pago),diff=Math.ceil((dl-now)/(1000*60*60*24));if(diff<=15&&diff>=0&&Number(c.saldo_actual)>0) upcoming.push({nombre:'TC '+c.banco,monto:c.saldo_actual,dias:diff});});
+  state.loans.forEach(l=>{
+    if(l.estado==='pagado') return;
+    if(l.direccion!=='otorgado' && l.dia_pago){const d=daysUntil(l.dia_pago);if(d<=15) upcoming.push({nombre:l.nombre,monto:l.cuota_mensual,dias:d});}
+  });
+  state.creditCards.forEach(c=>{const dl=getDeadline(c.fecha_corte,c.dias_limite_pago),diff=Math.ceil((dl-now)/(1000*60*60*24));if(diff<=15&&diff>=0&&Number(c.saldo_actual)>0) upcoming.push({nombre:(c.nombre_display||'TC '+c.banco),monto:c.saldo_actual,dias:diff});});
   upcoming.sort((a,b)=>a.dias-b.dias);
+
+  // Overdue personal loan alerts
+  state.loans.filter(l=>l.direccion==='otorgado'&&l.estado==='activo').forEach(l=>{
+    const venc=l.fecha_vencimiento||l.fecha_finalizacion;
+    if(venc && new Date(venc+'T00:00:00')<now) {
+      alerts+=`<div class="alert alert-danger">🚨 Préstamo a ${l.persona||l.nombre}: Vencido desde ${fdate(venc)} — Pendiente: ${money(l.monto_adeudado)}</div>`;
+    } else if(venc) {
+      const diff=Math.ceil((new Date(venc+'T00:00:00')-now)/(1000*60*60*24));
+      if(diff<=15&&diff>=0) alerts+=`<div class="alert alert-warning">⚠️ Préstamo a ${l.persona||l.nombre}: Vence en ${diff} días — Pendiente: ${money(l.monto_adeudado)}</div>`;
+    }
+  });
 
   // Budget mini
   let budgetMini='';
@@ -547,39 +561,126 @@ function viewTarjetas() {
 // PRESTAMOS
 // ============================================================
 function viewPrestamos() {
-  const loans=state.loans.map(loan=>{
+  const now=new Date();
+  const tomados=state.loans.filter(l=>l.direccion!=='otorgado');
+  const otorgados=state.loans.filter(l=>l.direccion==='otorgado');
+
+  function renderLoan(loan) {
+    const isOtorgado=loan.direccion==='otorgado';
     const payments=state.loanPayments.filter(p=>p.loan_id===loan.id);
-    const progress=loan.tipo==='prestamo'?pct(Number(loan.monto_original)-Number(loan.monto_adeudado),Number(loan.monto_original)):pct(Number(loan.monto_desembolsado)-Number(loan.monto_adeudado),Number(loan.monto_desembolsado));
-    const diasP=daysUntil(loan.dia_pago);
+    const montoBase=isOtorgado?Number(loan.monto_original||loan.monto_desembolsado||loan.monto_adeudado):loan.tipo==='prestamo'?Number(loan.monto_original):Number(loan.monto_desembolsado);
+    const progress=montoBase>0?pct(montoBase-Number(loan.monto_adeudado),montoBase):0;
+    const diasP=loan.dia_pago?daysUntil(loan.dia_pago):null;
+    const colorAccent=isOtorgado?'var(--accent)':'var(--danger)';
+    const colorBg=isOtorgado?'var(--success-light)':'var(--danger-light)';
     
+    // Status
+    let estadoBadge='';
+    if(loan.estado==='pagado') estadoBadge='<span class="badge badge-success">✅ Pagado</span>';
+    else if(loan.estado==='mora') estadoBadge='<span class="badge badge-danger">⚠️ En Mora</span>';
+    else {
+      // Check if overdue
+      const venc=loan.fecha_vencimiento||loan.fecha_finalizacion;
+      if(venc && new Date(venc+'T00:00:00')<now && Number(loan.monto_adeudado)>0) estadoBadge='<span class="badge badge-danger">⚠️ Vencido</span>';
+      else estadoBadge='<span class="badge badge-success">Activo</span>';
+    }
+
     let historial=payments.slice(0,5).map(p=>`<div class="flex-between" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="mono" style="font-size:12px">${fdate(p.fecha)}</span><span class="mono fw-700" style="font-size:13px;color:var(--success)">${money(p.monto)}</span></div>`).join('');
 
-    return `<div class="card mb-6">
+    let personaInfo='';
+    if(isOtorgado) {
+      personaInfo=`<div class="grid-2" style="gap:12px;margin-bottom:16px;padding:12px;background:var(--bg-tertiary);border-radius:var(--radius-sm)">
+        <div><div class="stat-label">Persona</div><div style="font-size:14px;font-weight:600">${loan.persona||'—'}</div></div>
+        <div><div class="stat-label">Contacto</div><div style="font-size:14px">${loan.contacto||'—'}</div></div>
+      </div>`;
+    }
+
+    return `<div class="card mb-6" style="border-left:4px solid ${colorAccent}">
       <div class="flex-between mb-4">
-        <div><h3 style="font-size:18px;font-weight:700">${loan.nombre}</h3><span class="badge badge-neutral" style="margin-top:4px">Pago día ${loan.dia_pago} — en ${diasP} días</span></div>
-        <div class="text-right"><div class="stat-label">Adeudado</div><div class="mono" style="font-size:22px;font-weight:700;color:var(--danger)">${money(loan.monto_adeudado)}</div></div>
-      </div>
-      <div class="progress-bar mb-4" style="height:10px"><div class="progress-fill" style="width:${progress}%;background:var(--success)"></div></div>
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px">${progress.toFixed(1)}% pagado</div>
-      <div class="grid-4" style="gap:12px;margin-bottom:16px">
-        <div><div class="stat-label">Cuota Mensual</div><div class="mono fw-700">${money(loan.cuota_mensual)}</div></div>
-        <div><div class="stat-label">Tasa</div><div class="fw-700">${loan.tasa}%</div></div>
-        <div><div class="stat-label">Finalización</div><div style="font-size:13px">${fdate(loan.fecha_finalizacion)}</div></div>
-        <div><div class="stat-label">Pagos Realizados</div><div class="fw-700">${payments.length}</div></div>
-      </div>
-      <div class="flex gap-4 flex-wrap" style="align-items:flex-end">
-        <button class="btn btn-primary" onclick="payLoan('${loan.id}')">✅ Registrar Pago Mensual (${money(loan.cuota_mensual)})</button>
-        <div class="flex gap-2" style="align-items:center">
-          <input class="form-input" type="number" placeholder="Monto extra" id="extra-${loan.id}" style="width:150px">
-          <button class="btn btn-ghost" onclick="payLoanExtra('${loan.id}')">Pago Extra</button>
+        <div>
+          <div class="flex gap-2" style="align-items:center;gap:8px">
+            <h3 style="font-size:18px;font-weight:700">${loan.nombre}</h3>
+            ${estadoBadge}
+            <span class="badge ${isOtorgado?'badge-success':'badge-danger'}">${isOtorgado?'📤 Otorgado':'📥 Tomado'}</span>
+          </div>
+          ${diasP!==null?`<span class="badge badge-neutral" style="margin-top:4px">Pago día ${loan.dia_pago} — en ${diasP} días</span>`:''}
+          ${loan.pago_unico?'<span class="badge badge-neutral" style="margin-top:4px;margin-left:4px">Pago único</span>':''}
+        </div>
+        <div class="text-right">
+          <div class="stat-label">${isOtorgado?'Te deben':'Adeudado'}</div>
+          <div class="mono" style="font-size:22px;font-weight:700;color:${colorAccent}">${money(loan.monto_adeudado)}</div>
         </div>
       </div>
-      <div style="margin-top:12px;font-size:12px;color:var(--text-muted)">Cuota actual: ${money(loan.cuota_mensual)} — <a href="#" style="color:var(--accent)" onclick="changeCuota('${loan.id}',${loan.cuota_mensual});return false">Cambiar cuota</a></div>
-      ${payments.length>0?`<div style="margin-top:16px"><div class="stat-label">Historial de Pagos</div>${historial}</div>`:''}
+      ${personaInfo}
+      <div class="progress-bar mb-4" style="height:10px"><div class="progress-fill" style="width:${progress}%;background:var(--success)"></div></div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px">${progress.toFixed(1)}% ${isOtorgado?'cobrado':'pagado'}</div>
+      <div class="grid-4" style="gap:12px;margin-bottom:16px">
+        <div><div class="stat-label">${loan.pago_unico?'Monto Total':'Cuota Mensual'}</div><div class="mono fw-700">${money(loan.pago_unico?loan.monto_adeudado:loan.cuota_mensual)}</div></div>
+        ${Number(loan.tasa)>0?`<div><div class="stat-label">Tasa</div><div class="fw-700">${loan.tasa}%</div></div>`:`<div><div class="stat-label">Tasa</div><div class="fw-700">—</div></div>`}
+        <div><div class="stat-label">${loan.fecha_vencimiento?'Vencimiento':'Finalización'}</div><div style="font-size:13px">${fdate(loan.fecha_vencimiento||loan.fecha_finalizacion)}</div></div>
+        <div><div class="stat-label">${isOtorgado?'Abonos Recibidos':'Pagos Realizados'}</div><div class="fw-700">${payments.length}</div></div>
+      </div>
+      ${loan.estado!=='pagado'?`<div class="flex gap-4 flex-wrap" style="align-items:flex-end">
+        ${!loan.pago_unico&&loan.cuota_mensual?`<button class="btn btn-primary" onclick="payLoan('${loan.id}')">${isOtorgado?'💰 Registrar Abono':'✅ Registrar Pago'} (${money(loan.cuota_mensual)})</button>`:''}
+        <div class="flex gap-2" style="align-items:center">
+          <input class="form-input" type="number" placeholder="${isOtorgado?'Abono recibido':'Monto extra'}" id="extra-${loan.id}" style="width:150px">
+          <button class="btn btn-ghost" onclick="payLoanExtra('${loan.id}')">${isOtorgado?'Registrar Abono':'Pago Extra'}</button>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="markLoanStatus('${loan.id}','pagado')">✅ Marcar como pagado</button>
+        ${isOtorgado&&loan.estado!=='mora'?`<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="markLoanStatus('${loan.id}','mora')">⚠️ Marcar en mora</button>`:''}
+      </div>
+      ${!loan.pago_unico?`<div style="margin-top:12px;font-size:12px;color:var(--text-muted)">Cuota actual: ${money(loan.cuota_mensual)} — <a href="#" style="color:var(--accent)" onclick="changeCuota('${loan.id}',${loan.cuota_mensual});return false">Cambiar cuota</a></div>`:''}
+      `:'<div style="padding:12px;background:var(--success-light);border-radius:var(--radius-sm);text-align:center;color:var(--success);font-weight:600">✅ Este préstamo ha sido saldado</div>'}
+      <div class="flex gap-2 mt-4">
+        <button class="btn btn-ghost btn-sm" onclick="editLoan('${loan.id}')">✏️ Editar</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteLoan('${loan.id}')">🗑 Eliminar</button>
+      </div>
+      ${payments.length>0?`<div style="margin-top:16px"><div class="stat-label">Historial de ${isOtorgado?'Abonos':'Pagos'}</div>${historial}</div>`:''}
     </div>`;
-  }).join('');
+  }
 
-  return `<div class="page-header"><h2>Préstamos</h2><p>Seguimiento de pagos y amortización</p></div>${loans}`;
+  // New Loan Form
+  const newLoanForm=`<div class="card mb-6" id="newLoanForm" style="display:none">
+    <div class="card-title">Nuevo Préstamo</div>
+    <div class="grid-2" style="gap:12px">
+      <div class="form-group"><label class="form-label">Dirección</label><select class="form-select" id="nlDir" onchange="toggleLoanFields()"><option value="tomado">📥 Préstamo Tomado (yo debo)</option><option value="otorgado">📤 Préstamo Otorgado (me deben)</option></select></div>
+      <div class="form-group"><label class="form-label">Nombre / Descripción</label><input class="form-input" id="nlNombre" placeholder="Ej: Préstamo carro, Préstamo a Juan..."></div>
+      <div class="form-group" id="nlPersonaGrp" style="display:none"><label class="form-label">Persona</label><input class="form-input" id="nlPersona" placeholder="Nombre de la persona"></div>
+      <div class="form-group" id="nlContactoGrp" style="display:none"><label class="form-label">Contacto / Nota</label><input class="form-input" id="nlContacto" placeholder="Teléfono, detalle..."></div>
+      <div class="form-group"><label class="form-label">Monto Total</label><input class="form-input" type="number" id="nlMonto" placeholder="0.00"></div>
+      <div class="form-group"><label class="form-label">Monto Adeudado Actual</label><input class="form-input" type="number" id="nlAdeudado" placeholder="0.00 (si es igual, déjalo vacío)"></div>
+      <div class="form-group"><label class="form-label">Tipo de Pago</label><select class="form-select" id="nlPagoTipo" onchange="toggleCuotaField()"><option value="cuotas">Cuotas mensuales</option><option value="unico">Pago único</option></select></div>
+      <div class="form-group" id="nlCuotaGrp"><label class="form-label">Cuota Mensual</label><input class="form-input" type="number" id="nlCuota" placeholder="0.00"></div>
+      <div class="form-group"><label class="form-label">Tasa de Interés (%)</label><input class="form-input" type="number" id="nlTasa" placeholder="0 si no aplica" value="0"></div>
+      <div class="form-group" id="nlDiaGrp"><label class="form-label">Día de Pago</label><input class="form-input" type="number" id="nlDia" placeholder="1-31" min="1" max="31"></div>
+      <div class="form-group"><label class="form-label">Fecha de Vencimiento / Finalización</label><input class="form-input" type="date" id="nlVenc"></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-primary" onclick="saveNewLoan()">💾 Guardar Préstamo</button>
+      <button class="btn btn-ghost" onclick="$('#newLoanForm').style.display='none'">Cancelar</button>
+    </div>
+  </div>`;
+
+  // Summary cards
+  const totalTeDeben=otorgados.filter(l=>l.estado!=='pagado').reduce((s,l)=>s+Number(l.monto_adeudado),0);
+  const totalDebes=tomados.filter(l=>l.estado!=='pagado').reduce((s,l)=>s+Number(l.monto_adeudado),0);
+  const enMora=otorgados.filter(l=>l.estado==='mora'||(l.estado==='activo'&&(l.fecha_vencimiento||l.fecha_finalizacion)&&new Date((l.fecha_vencimiento||l.fecha_finalizacion)+'T00:00:00')<now));
+
+  return `<div class="page-header">
+    <div class="flex-between">
+      <div><h2>Préstamos</h2><p>Seguimiento de deudas y préstamos personales</p></div>
+      <button class="btn btn-primary" onclick="$('#newLoanForm').style.display='block'">➕ Nuevo Préstamo</button>
+    </div>
+  </div>
+  <div class="grid-3 mb-6">
+    <div class="stat-card"><div class="stat-label">Total que Debes</div><div class="stat-value negative">${money(totalDebes)}</div><div class="stat-sub">${tomados.filter(l=>l.estado!=='pagado').length} préstamos activos</div></div>
+    <div class="stat-card"><div class="stat-label">Total que te Deben</div><div class="stat-value positive">${money(totalTeDeben)}</div><div class="stat-sub">${otorgados.filter(l=>l.estado!=='pagado').length} préstamos activos</div></div>
+    <div class="stat-card"><div class="stat-label">En Mora</div><div class="stat-value ${enMora.length>0?'negative':''}">${enMora.length}</div><div class="stat-sub">${enMora.length>0?money(enMora.reduce((s,l)=>s+Number(l.monto_adeudado),0))+' pendiente':'Todo al día ✅'}</div></div>
+  </div>
+  ${newLoanForm}
+  ${tomados.length>0?`<div style="margin-bottom:12px"><div class="card-title">📥 Préstamos Tomados</div></div>${tomados.map(renderLoan).join('')}`:''}
+  ${otorgados.length>0?`<div style="margin-bottom:12px;margin-top:24px"><div class="card-title">📤 Préstamos Otorgados</div></div>${otorgados.map(renderLoan).join('')}`:''}
+  ${tomados.length===0&&otorgados.length===0?'<div class="card"><div class="empty-state"><div class="empty-icon">🏦</div><p>No hay préstamos registrados</p></div></div>':''}`;
 }
 
 // ============================================================
@@ -823,6 +924,107 @@ async function changeCuota(id, current) {
     await db.from('loans').update({cuota_mensual:Number(newCuota)}).eq('id',id);
     await loadAll(); render();
   }
+}
+
+function toggleLoanFields() {
+  const dir=$('#nlDir').value;
+  const show=dir==='otorgado';
+  $('#nlPersonaGrp').style.display=show?'block':'none';
+  $('#nlContactoGrp').style.display=show?'block':'none';
+}
+
+function toggleCuotaField() {
+  const tipo=$('#nlPagoTipo').value;
+  $('#nlCuotaGrp').style.display=tipo==='unico'?'none':'block';
+  $('#nlDiaGrp').style.display=tipo==='unico'?'none':'block';
+}
+
+async function saveNewLoan() {
+  const nombre=$('#nlNombre').value.trim();
+  if(!nombre) return alert('Ingresa un nombre para el préstamo');
+  const dir=$('#nlDir').value;
+  const monto=Number($('#nlMonto').value)||0;
+  const adeudado=Number($('#nlAdeudado').value)||monto;
+  const pagoUnico=$('#nlPagoTipo').value==='unico';
+  const cuota=pagoUnico?0:(Number($('#nlCuota').value)||0);
+  const tasa=Number($('#nlTasa').value)||0;
+  const dia=pagoUnico?null:(Number($('#nlDia').value)||null);
+  const venc=$('#nlVenc').value||null;
+  const persona=dir==='otorgado'?$('#nlPersona').value.trim():null;
+  const contacto=dir==='otorgado'?$('#nlContacto').value.trim():null;
+  const id=nombre.toLowerCase().replace(/\s+/g,'-').substring(0,20)+'-'+Date.now().toString(36);
+
+  await db.from('loans').insert({
+    id, nombre, monto_original:monto, monto_adeudado:adeudado, tasa,
+    cuota_mensual:cuota, dia_pago:dia, fecha_finalizacion:venc, fecha_vencimiento:venc,
+    tipo:'prestamo', direccion:dir, persona, contacto, estado:'activo', pago_unico:pagoUnico
+  });
+  await loadAll(); render();
+}
+
+async function deleteLoan(id) {
+  if(!confirm('¿Eliminar este préstamo y todo su historial de pagos?')) return;
+  await db.from('loan_payments').delete().eq('loan_id',id);
+  await db.from('loans').delete().eq('id',id);
+  await loadAll(); render();
+}
+
+async function markLoanStatus(id, status) {
+  const labels={pagado:'pagado',mora:'en mora',activo:'activo'};
+  if(!confirm(`¿Marcar este préstamo como ${labels[status]}?`)) return;
+  const updates={estado:status};
+  if(status==='pagado') updates.monto_adeudado=0;
+  await db.from('loans').update(updates).eq('id',id);
+  await loadAll(); render();
+}
+
+async function editLoan(id) {
+  const loan=state.loans.find(l=>l.id===id);
+  if(!loan) return;
+  const isOtorgado=loan.direccion==='otorgado';
+  const html=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:999" id="editLoanModal" onclick="if(event.target===this)this.remove()">
+    <div style="background:var(--bg-card);border-radius:16px;padding:28px;width:90%;max-width:520px;max-height:85vh;overflow-y:auto;box-shadow:var(--shadow-md)">
+      <h3 style="font-size:18px;font-weight:700;margin-bottom:20px">Editar: ${loan.nombre}</h3>
+      <div class="grid-2" style="gap:12px">
+        <div class="form-group"><label class="form-label">Nombre</label><input class="form-input" id="elNombre" value="${loan.nombre}"></div>
+        <div class="form-group"><label class="form-label">Dirección</label><select class="form-select" id="elDir"><option value="tomado" ${!isOtorgado?'selected':''}>📥 Tomado</option><option value="otorgado" ${isOtorgado?'selected':''}>📤 Otorgado</option></select></div>
+        ${isOtorgado?`<div class="form-group"><label class="form-label">Persona</label><input class="form-input" id="elPersona" value="${loan.persona||''}"></div>
+        <div class="form-group"><label class="form-label">Contacto</label><input class="form-input" id="elContacto" value="${loan.contacto||''}"></div>`:`<input type="hidden" id="elPersona" value=""><input type="hidden" id="elContacto" value="">`}
+        <div class="form-group"><label class="form-label">Monto Original</label><input class="form-input" type="number" id="elMontoOrig" value="${loan.monto_original||''}"></div>
+        <div class="form-group"><label class="form-label">Monto Adeudado</label><input class="form-input" type="number" id="elAdeudado" value="${loan.monto_adeudado}"></div>
+        <div class="form-group"><label class="form-label">Cuota Mensual</label><input class="form-input" type="number" id="elCuota" value="${loan.cuota_mensual||''}"></div>
+        <div class="form-group"><label class="form-label">Tasa (%)</label><input class="form-input" type="number" id="elTasa" value="${loan.tasa||0}"></div>
+        <div class="form-group"><label class="form-label">Día de Pago</label><input class="form-input" type="number" id="elDia" value="${loan.dia_pago||''}" min="1" max="31"></div>
+        <div class="form-group"><label class="form-label">Estado</label><select class="form-select" id="elEstado"><option value="activo" ${loan.estado==='activo'?'selected':''}>Activo</option><option value="pagado" ${loan.estado==='pagado'?'selected':''}>Pagado</option><option value="mora" ${loan.estado==='mora'?'selected':''}>En Mora</option></select></div>
+        <div class="form-group"><label class="form-label">Fecha Vencimiento</label><input class="form-input" type="date" id="elVenc" value="${loan.fecha_vencimiento||loan.fecha_finalizacion||''}"></div>
+      </div>
+      <div class="flex gap-2" style="justify-content:flex-end;margin-top:20px">
+        <button class="btn btn-ghost" onclick="$('#editLoanModal').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="saveEditLoan('${id}')">💾 Guardar</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+async function saveEditLoan(id) {
+  const data={
+    nombre:$('#elNombre').value.trim(),
+    direccion:$('#elDir').value,
+    persona:$('#elPersona').value.trim()||null,
+    contacto:$('#elContacto').value.trim()||null,
+    monto_original:Number($('#elMontoOrig').value)||null,
+    monto_adeudado:Number($('#elAdeudado').value)||0,
+    cuota_mensual:Number($('#elCuota').value)||0,
+    tasa:Number($('#elTasa').value)||0,
+    dia_pago:Number($('#elDia').value)||null,
+    estado:$('#elEstado').value,
+    fecha_vencimiento:$('#elVenc').value||null,
+    fecha_finalizacion:$('#elVenc').value||null,
+  };
+  await db.from('loans').update(data).eq('id',id);
+  $('#editLoanModal').remove();
+  await loadAll(); render();
 }
 
 let _budgetTimer=null;
