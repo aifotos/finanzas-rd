@@ -258,7 +258,7 @@ async function loadAll() {
   state.variableIncome = vi.data||[];
   state.savingsDeposits = sd.data||[];
   const themeSetting = (st.data||[]).find(s=>s.key==='theme');
-  if(themeSetting) state.theme = JSON.parse(themeSetting.value);
+  if(themeSetting) { const v = themeSetting.value; state.theme = (typeof v === 'string') ? v.replace(/"/g,'') : (v || 'light'); }
   document.documentElement.setAttribute('data-theme', state.theme);
 }
 
@@ -788,7 +788,7 @@ async function addSavings() {
 async function toggleTheme() {
   state.theme=state.theme==='light'?'dark':'light';
   document.documentElement.setAttribute('data-theme',state.theme);
-  await db.from('settings').upsert({key:'theme',value:JSON.stringify(state.theme)});
+  await db.from('settings').upsert({key:'theme',value:state.theme});
   render();
 }
 
