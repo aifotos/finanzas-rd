@@ -688,7 +688,11 @@ function viewPrestamos() {
 // ============================================================
 function viewPresupuesto() {
   const cm=curMonth(), mtx=state.transactions.filter(t=>t.fecha?.startsWith(cm)&&t.tipo==='gasto');
-  const totalP=state.budgetCategories.reduce((s,c)=>s+Number(c.presupuesto),0);
+  const freqDiv={mensual:1,bimestral:2,trimestral:3,semestral:6,anual:12};
+  const freqLbl={mensual:'Mensual',bimestral:'Bimestral',trimestral:'Trimestral',semestral:'Semestral',anual:'Anual'};
+  function getMoProv(c){const f=c.frecuencia||'mensual';const t=Number(c.monto_total)||Number(c.presupuesto)||0;return t/(freqDiv[f]||1);}
+  function getAccum(c){const p=getMoProv(c);if(p<=0)return 0;const f=c.frecuencia||'mensual';if(f==='mensual')return p;const tx=state.transactions.filter(t=>t.tipo==='gasto'&&t.categoria===c.id).sort((a,b)=>b.fecha.localeCompare(a.fecha));if(tx.length===0)return p;const ld=new Date(tx[0].fecha+'T00:00:00'),n=new Date(),md=Math.max(1,(n.getFullYear()-ld.getFullYear())*12+(n.getMonth()-ld.getMonth()));return p*Math.min(md,freqDiv[f]||1);}
+  const totalP=state.budgetCategories.reduce((s,c)=>s+getMoProv(c),0);
   const totalG=mtx.reduce((s,t)=>s+Number(t.monto),0);
   
   // Day progress for trend calculation
@@ -698,9 +702,11 @@ function viewPresupuesto() {
   const monthProgress=dayOfMonth/daysInMonth;
 
   // Chart: Budget vs Actual (only categories with budget > 0)
-  const chartCats=state.budgetCategories.filter(c=>Number(c.presupuesto)>0).map(cat=>{
+  const chartCats=state.budgetCategories.filter(c=>getMoProv(c)>0).map(cat=>{
     const spent=mtx.filter(t=>t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
-    return {...cat,spent,budget:Number(cat.presupuesto)};
+    const prov=getMoProv(cat);const freq=cat.frecuencia||'mensual';
+    const budget=freq==='mensual'?prov:getAccum(cat);
+    return {...cat,spent,budget,prov};
   });
   const chartMax=chartCats.length>0?Math.max(...chartCats.map(c=>Math.max(c.spent,c.budget))):1;
   
@@ -729,22 +735,42 @@ function viewPresupuesto() {
   }
 
   // Table rows with trend indicator
+  const freqOpts=Object.entries(freqLbl).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
   const rows=state.budgetCategories.map(cat=>{
     const spent=mtx.filter(t=>t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
-    const rem=Number(cat.presupuesto)-spent;
-    const p=pct(spent,Number(cat.presupuesto));
+    const freq=cat.frecuencia||'mensual';
+    const isM=freq==='mensual';
+    const prov=getMoProv(cat);
+    const accum=isM?prov:getAccum(cat);
+    const comp=isM?prov:accum;
+    const rem=comp-spent;
+    const p=comp>0?pct(spent,comp):0;
     const st=p>100?'danger':p>85?'warning':'success';
     
-    // Trend: if you're at day 15 of 30 (50% of month) but spent 80% of budget, you're trending over
     let trend='';
-    if(Number(cat.presupuesto)>0 && spent>0) {
-      const projectedSpend=spent/monthProgress;
-      const projPct=pct(projectedSpend,Number(cat.presupuesto));
-      if(projPct>110) trend=`<div style="font-size:10px;color:var(--danger);margin-top:2px">📈 Proyección: ${money(projectedSpend)}</div>`;
-      else if(projPct>90) trend=`<div style="font-size:10px;color:var(--warning);margin-top:2px">📈 Proyección: ${money(projectedSpend)}</div>`;
+    if(isM && prov>0 && spent>0) {
+      const proj=spent/monthProgress;
+      const projP=pct(proj,prov);
+      if(projP>110) trend=`<div style="font-size:10px;color:var(--danger);margin-top:2px">📈 Proyección: ${money(proj)}</div>`;
+      else if(projP>90) trend=`<div style="font-size:10px;color:var(--warning);margin-top:2px">📈 Proyección: ${money(proj)}</div>`;
     }
+    let fundInfo='';
+    if(!isM && prov>0) fundInfo=`<div style="font-size:10px;color:var(--text-muted);margin-top:2px">💰 Fondo: ${money(accum)} (${money(prov)}/mes)</div>`;
+    const freqBadge=!isM?`<span class="badge badge-neutral" style="margin-left:4px;font-size:9px">${freqLbl[freq]}</span>`:'';
+    const montoVal=Number(cat.monto_total)||Number(cat.presupuesto)||'';
     
-    return `<tr><td><div class="fw-700">${cat.icono} ${cat.nombre}</div>${trend}</td><td><input class="form-input" type="number" value="${cat.presupuesto||''}" onchange="updateBudget('${cat.id}',this.value)" placeholder="0.00" style="width:120px;padding:6px 8px;font-size:13px"></td><td class="mono" style="color:var(--danger)">${money(spent)}</td><td class="mono" style="color:${rem>=0?'var(--success)':'var(--danger)'}">${money(rem)}</td><td style="width:120px"><div class="progress-bar" style="height:6px"><div class="progress-fill" style="width:${clamp(p,0,100)}%;background:var(--${st})"></div></div></td><td>${Number(cat.presupuesto)>0?`<span class="badge badge-${st}">${p>100?'+'+Math.round(p-100)+'%':Math.round(p)+'%'}</span>`:''}</td></tr>`;
+    return `<tr>
+      <td><div class="fw-700">${cat.icono} ${cat.nombre}${freqBadge}</div>${trend}${fundInfo}</td>
+      <td><div class="flex" style="gap:4px;align-items:center">
+        <input class="form-input" type="number" value="${montoVal}" onchange="updateBudgetFull('${cat.id}',this.value)" placeholder="0.00" style="width:100px;padding:6px 8px;font-size:13px">
+        <select class="form-select" onchange="updateBudgetFreq('${cat.id}',this.value)" style="width:90px;padding:6px 4px;font-size:11px">${freqOpts.replace('value="'+freq+'"','value="'+freq+'" selected')}</select>
+      </div>${!isM?`<div style="font-size:10px;color:var(--text-muted);margin-top:2px">= ${money(prov)}/mes</div>`:''}</td>
+      <td class="mono" style="color:var(--danger)">${money(spent)}</td>
+      <td class="mono" style="color:${rem>=0?'var(--success)':'var(--danger)'}">${money(rem)}</td>
+      <td style="width:120px"><div class="progress-bar" style="height:6px"><div class="progress-fill" style="width:${clamp(p,0,100)}%;background:var(--${st})"></div></div></td>
+      <td>${(prov>0||spent>0)?`<span class="badge badge-${st}">${p>100?'+'+Math.round(p-100)+'%':Math.round(p)+'%'}</span>`:''}</td>
+    </tr>`;
+  }).join('');
   }).join('');
 
   // Month progress indicator
@@ -752,12 +778,12 @@ function viewPresupuesto() {
 
   return `<div class="page-header"><h2>Presupuesto Mensual</h2><p>${monthLabel(cm)} — Día ${dayOfMonth} de ${daysInMonth} (${monthPctLabel}% del mes)</p></div>
   <div class="grid-3 mb-6">
-    <div class="stat-card"><div class="stat-label">Total Presupuestado</div><div class="stat-value">${money(totalP)}</div></div>
+    <div class="stat-card"><div class="stat-label">Provisión Mensual</div><div class="stat-value">${money(totalP)}</div><div class="stat-sub">Incluye provisiones no mensuales</div></div>
     <div class="stat-card"><div class="stat-label">Total Gastado</div><div class="stat-value negative">${money(totalG)}</div></div>
     <div class="stat-card"><div class="stat-label">Remanente</div><div class="stat-value ${totalP-totalG>=0?'positive':'negative'}">${money(totalP-totalG)}</div></div>
   </div>
   ${chartHTML}
-  <div class="card"><div class="card-title">Partidas Presupuestarias</div><div class="table-container"><table><thead><tr><th>Categoría</th><th>Presupuesto</th><th>Gastado</th><th>Remanente</th><th>Progreso</th><th>Estado</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  <div class="card"><div class="card-title">Partidas Presupuestarias</div><div class="table-container"><table><thead><tr><th>Categoría</th><th>Monto / Frecuencia</th><th>Gastado</th><th>Remanente</th><th>Progreso</th><th>Estado</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
 // ============================================================
@@ -1080,56 +1106,34 @@ async function saveEditLoan(id) {
 }
 
 let _budgetTimer=null;
-async function updateBudget(catId, value) {
-  // Update state immediately for responsive UI
-  state.budgetCategories=state.budgetCategories.map(c=>c.id===catId?{...c,presupuesto:Number(value)||0}:c);
-  
-  // Update the summary cards and row data in real time without full re-render
-  updateBudgetDisplay(catId);
-  
-  // Debounce the DB save (wait 600ms after last keystroke)
+async function updateBudgetFull(catId, value) {
+  const cat=state.budgetCategories.find(c=>c.id===catId);
+  const freq=cat?cat.frecuencia||'mensual':'mensual';
+  const freqDiv={mensual:1,bimestral:2,trimestral:3,semestral:6,anual:12};
+  const montoTotal=Number(value)||0;
+  const provision=montoTotal/(freqDiv[freq]||1);
+  state.budgetCategories=state.budgetCategories.map(c=>c.id===catId?{...c,monto_total:montoTotal,presupuesto:provision}:c);
   clearTimeout(_budgetTimer);
   _budgetTimer=setTimeout(async()=>{
-    await db.from('budget_categories').update({presupuesto:Number(value)||0}).eq('id',catId);
+    await db.from('budget_categories').update({monto_total:montoTotal,presupuesto:provision}).eq('id',catId);
   },600);
 }
 
+async function updateBudgetFreq(catId, freq) {
+  const cat=state.budgetCategories.find(c=>c.id===catId);
+  const freqDiv={mensual:1,bimestral:2,trimestral:3,semestral:6,anual:12};
+  const montoTotal=Number(cat.monto_total)||Number(cat.presupuesto)||0;
+  const provision=montoTotal/(freqDiv[freq]||1);
+  state.budgetCategories=state.budgetCategories.map(c=>c.id===catId?{...c,frecuencia:freq,presupuesto:provision}:c);
+  await db.from('budget_categories').update({frecuencia:freq,presupuesto:provision}).eq('id',catId);
+  render();
+}
+
+// Keep old function name for backwards compatibility
+async function updateBudget(catId, value) { updateBudgetFull(catId, value); }
+
 function updateBudgetDisplay(changedCatId) {
-  const cm=curMonth();
-  const mtx=state.transactions.filter(t=>t.fecha?.startsWith(cm)&&t.tipo==='gasto');
-  const totalP=state.budgetCategories.reduce((s,c)=>s+Number(c.presupuesto),0);
-  const totalG=mtx.reduce((s,t)=>s+Number(t.monto),0);
-  
-  // Update summary cards
-  const statCards=$$('.stat-card .stat-value');
-  if(statCards.length>=3) {
-    statCards[0].textContent=money(totalP);
-    statCards[1].textContent=money(totalG);
-    statCards[2].textContent=money(totalP-totalG);
-    statCards[2].className='stat-value '+((totalP-totalG>=0)?'positive':'negative');
-  }
-  
-  // Update each row's gastado, remanente, progress, badge
-  state.budgetCategories.forEach(cat=>{
-    const spent=mtx.filter(t=>t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
-    const rem=Number(cat.presupuesto)-spent;
-    const p=Number(cat.presupuesto)>0?pct(spent,Number(cat.presupuesto)):0;
-    const st=p>100?'danger':p>85?'warning':'success';
-    
-    // Find the row by looking at the input with matching onchange
-    const input=$(`input[onchange="updateBudget('${cat.id}',this.value)"]`);
-    if(!input) return;
-    const row=input.closest('tr');
-    if(!row) return;
-    const tds=row.querySelectorAll('td');
-    if(tds.length>=6) {
-      tds[2].innerHTML=`<span class="mono" style="color:var(--danger)">${money(spent)}</span>`;
-      tds[3].innerHTML=`<span class="mono" style="color:${rem>=0?'var(--success)':'var(--danger)'}"">${money(rem)}</span>`;
-      const bar=tds[4].querySelector('.progress-fill');
-      if(bar) { bar.style.width=clamp(p,0,100)+'%'; bar.style.background=`var(--${st})`; }
-      tds[5].innerHTML=Number(cat.presupuesto)>0?`<span class="badge badge-${st}">${p>100?'+'+Math.round(p-100)+'%':Math.round(p)+'%'}</span>`:'';
-    }
-  });
+  // simplified - just re-render on frequency changes
 }
 
 async function addVarIncome() {
