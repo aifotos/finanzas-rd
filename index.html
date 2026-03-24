@@ -688,33 +688,29 @@ function viewPrestamos() {
 // ============================================================
 function viewPresupuesto() {
   const cm=curMonth(), mtx=state.transactions.filter(t=>t.fecha?.startsWith(cm)&&t.tipo==='gasto');
-  const freqDiv={mensual:1,bimestral:2,trimestral:3,semestral:6,anual:12};
-  const freqLbl={mensual:'Mensual',bimestral:'Bimestral',trimestral:'Trimestral',semestral:'Semestral',anual:'Anual'};
-  function getMoProv(c){const f=c.frecuencia||'mensual';const t=Number(c.monto_total)||Number(c.presupuesto)||0;return t/(freqDiv[f]||1);}
-  function getAccum(c){const p=getMoProv(c);if(p<=0)return 0;const f=c.frecuencia||'mensual';if(f==='mensual')return p;const tx=state.transactions.filter(t=>t.tipo==='gasto'&&t.categoria===c.id).sort((a,b)=>b.fecha.localeCompare(a.fecha));if(tx.length===0)return p;const ld=new Date(tx[0].fecha+'T00:00:00'),n=new Date(),md=Math.max(1,(n.getFullYear()-ld.getFullYear())*12+(n.getMonth()-ld.getMonth()));return p*Math.min(md,freqDiv[f]||1);}
-  const totalP=state.budgetCategories.reduce((s,c)=>s+getMoProv(c),0);
-  const totalG=mtx.reduce((s,t)=>s+Number(t.monto),0);
+  const allGastoTx=state.transactions.filter(t=>t.tipo==='gasto');
+  const fijos=state.budgetCategories.filter(c=>(c.tipo_gasto||'fijo')==='fijo');
+  const periodicos=state.budgetCategories.filter(c=>c.tipo_gasto==='periodico');
   
-  // Day progress for trend calculation
+  const totalPFijo=fijos.reduce((s,c)=>s+Number(c.presupuesto||0),0);
+  const totalGFijo=fijos.reduce((s,c)=>s+mtx.filter(t=>t.categoria===c.id).reduce((sum,t)=>sum+Number(t.monto),0),0);
+  
   const today=new Date();
   const dayOfMonth=today.getDate();
   const daysInMonth=new Date(today.getFullYear(),today.getMonth()+1,0).getDate();
   const monthProgress=dayOfMonth/daysInMonth;
 
-  // Chart: Budget vs Actual (only categories with budget > 0)
-  const chartCats=state.budgetCategories.filter(c=>getMoProv(c)>0).map(cat=>{
+  // ---- CHART: Fixed budget vs actual ----
+  const chartCats=fijos.filter(c=>Number(c.presupuesto)>0).map(cat=>{
     const spent=mtx.filter(t=>t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
-    const prov=getMoProv(cat);const freq=cat.frecuencia||'mensual';
-    const budget=freq==='mensual'?prov:getAccum(cat);
-    return {...cat,spent,budget,prov};
+    return {...cat,spent,budget:Number(cat.presupuesto)};
   });
   const chartMax=chartCats.length>0?Math.max(...chartCats.map(c=>Math.max(c.spent,c.budget))):1;
-  
   let chartHTML='';
   if(chartCats.length>0) {
     const bars=chartCats.map(c=>{
       const bH=Math.max(2,(c.budget/chartMax)*140);
-      const sH=Math.max(2,(c.spent/chartMax)*140);
+      const sH=Math.max(c.spent>0?2:0,(c.spent/chartMax)*140);
       return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;min-width:50px">
         <div style="display:flex;align-items:flex-end;gap:3px;height:150px">
           <div style="width:16px;height:${bH}px;background:var(--accent);border-radius:3px 3px 0 0;opacity:0.4" title="Presupuesto: ${money(c.budget)}"></div>
@@ -724,7 +720,7 @@ function viewPresupuesto() {
       </div>`;
     }).join('');
     chartHTML=`<div class="card mb-6">
-      <div class="card-title">Presupuesto vs Gasto Real</div>
+      <div class="card-title">Presupuesto vs Gasto Real (Fijos)</div>
       <div style="display:flex;align-items:flex-end;gap:4px;overflow-x:auto;padding-bottom:8px">${bars}</div>
       <div class="flex gap-4 mt-4" style="justify-content:center">
         <div class="flex" style="align-items:center;gap:6px"><div style="width:12px;height:12px;border-radius:2px;background:var(--accent);opacity:0.4"></div><span style="font-size:11px;color:var(--text-muted)">Presupuesto</span></div>
@@ -734,55 +730,119 @@ function viewPresupuesto() {
     </div>`;
   }
 
-  // Table rows with trend indicator
-  const freqOpts=Object.entries(freqLbl).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
-  const rows=state.budgetCategories.map(cat=>{
+  // ---- FIXED ROWS ----
+  const fijoRows=fijos.map(cat=>{
     const spent=mtx.filter(t=>t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
-    const freq=cat.frecuencia||'mensual';
-    const isM=freq==='mensual';
-    const prov=getMoProv(cat);
-    const accum=isM?prov:getAccum(cat);
-    const comp=isM?prov:accum;
-    const rem=comp-spent;
-    const p=comp>0?pct(spent,comp):0;
+    const bud=Number(cat.presupuesto)||0;
+    const rem=bud-spent;
+    const p=bud>0?pct(spent,bud):0;
     const st=p>100?'danger':p>85?'warning':'success';
-    
     let trend='';
-    if(isM && prov>0 && spent>0) {
+    if(bud>0 && spent>0) {
       const proj=spent/monthProgress;
-      const projP=pct(proj,prov);
+      const projP=pct(proj,bud);
       if(projP>110) trend=`<div style="font-size:10px;color:var(--danger);margin-top:2px">📈 Proyección: ${money(proj)}</div>`;
       else if(projP>90) trend=`<div style="font-size:10px;color:var(--warning);margin-top:2px">📈 Proyección: ${money(proj)}</div>`;
     }
-    let fundInfo='';
-    if(!isM && prov>0) fundInfo=`<div style="font-size:10px;color:var(--text-muted);margin-top:2px">💰 Fondo: ${money(accum)} (${money(prov)}/mes)</div>`;
-    const freqBadge=!isM?`<span class="badge badge-neutral" style="margin-left:4px;font-size:9px">${freqLbl[freq]}</span>`:'';
-    const montoVal=Number(cat.monto_total)||Number(cat.presupuesto)||'';
-    
     return `<tr>
-      <td><div class="fw-700">${cat.icono} ${cat.nombre}${freqBadge}</div>${trend}${fundInfo}</td>
-      <td><div class="flex" style="gap:4px;align-items:center">
-        <input class="form-input" type="number" value="${montoVal}" onchange="updateBudgetFull('${cat.id}',this.value)" placeholder="0.00" style="width:100px;padding:6px 8px;font-size:13px">
-        <select class="form-select" onchange="updateBudgetFreq('${cat.id}',this.value)" style="width:90px;padding:6px 4px;font-size:11px">${freqOpts.replace('value="'+freq+'"','value="'+freq+'" selected')}</select>
-      </div>${!isM?`<div style="font-size:10px;color:var(--text-muted);margin-top:2px">= ${money(prov)}/mes</div>`:''}</td>
+      <td><div class="fw-700">${cat.icono} ${cat.nombre}</div>${trend}</td>
+      <td><input class="form-input" type="number" value="${bud||''}" onchange="updateBudgetFijo('${cat.id}',this.value)" placeholder="0.00" style="width:120px;padding:6px 8px;font-size:13px"></td>
       <td class="mono" style="color:var(--danger)">${money(spent)}</td>
       <td class="mono" style="color:${rem>=0?'var(--success)':'var(--danger)'}">${money(rem)}</td>
-      <td style="width:120px"><div class="progress-bar" style="height:6px"><div class="progress-fill" style="width:${clamp(p,0,100)}%;background:var(--${st})"></div></div></td>
-      <td>${(prov>0||spent>0)?`<span class="badge badge-${st}">${p>100?'+'+Math.round(p-100)+'%':Math.round(p)+'%'}</span>`:''}</td>
+      <td style="width:100px"><div class="progress-bar" style="height:6px"><div class="progress-fill" style="width:${clamp(p,0,100)}%;background:var(--${st})"></div></div></td>
+      <td>${bud>0?`<span class="badge badge-${st}">${p>100?'+'+Math.round(p-100)+'%':Math.round(p)+'%'}</span>`:''}</td>
+      <td><div class="flex gap-2"><button class="btn-icon" title="Convertir a periódico" onclick="convertCat('${cat.id}','periodico')">🔄</button><button class="btn-icon" title="Eliminar" onclick="deleteCat('${cat.id}')" style="color:var(--danger)">🗑</button></div></td>
     </tr>`;
   }).join('');
 
-  // Month progress indicator
+  // ---- PERIODIC ROWS ----
+  const periodicoRows=periodicos.map(cat=>{
+    const montoEst=Number(cat.monto_total)||0;
+    // Find all transactions for this category, sorted by date desc
+    const catTx=allGastoTx.filter(t=>t.categoria===cat.id).sort((a,b)=>b.fecha.localeCompare(a.fecha));
+    const lastTx=catTx.length>0?catTx[0]:null;
+    const lastDate=lastTx?new Date(lastTx.fecha+'T00:00:00'):null;
+    const daysSinceLast=lastDate?Math.floor((today-lastDate)/(1000*60*60*24)):null;
+    
+    // Calculate average days between purchases
+    let avgDays=null;
+    if(catTx.length>=2) {
+      let totalDays=0;
+      for(let i=0;i<catTx.length-1&&i<10;i++){
+        const d1=new Date(catTx[i].fecha+'T00:00:00');
+        const d2=new Date(catTx[i+1].fecha+'T00:00:00');
+        totalDays+=Math.abs((d1-d2)/(1000*60*60*24));
+      }
+      avgDays=Math.round(totalDays/Math.min(catTx.length-1,10));
+    }
+
+    const spentThisMonth=mtx.filter(t=>t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
+    const isOverdue=avgDays&&daysSinceLast&&daysSinceLast>avgDays;
+
+    return `<div class="card mb-4" style="border-left:3px solid ${isOverdue?'var(--warning)':'var(--border)'}">
+      <div class="flex-between">
+        <div>
+          <div class="fw-700" style="font-size:15px">${cat.icono} ${cat.nombre}</div>
+          ${montoEst>0?`<div style="font-size:12px;color:var(--text-muted);margin-top:2px">Estimado por evento: ${money(montoEst)}</div>`:''}
+        </div>
+        <div class="flex gap-2">
+          <button class="btn-icon" title="Convertir a fijo mensual" onclick="convertCat('${cat.id}','fijo')">🔄</button>
+          <button class="btn-icon" title="Eliminar" onclick="deleteCat('${cat.id}')" style="color:var(--danger)">🗑</button>
+        </div>
+      </div>
+      <div class="grid-3 mt-4" style="gap:12px">
+        <div>
+          <div class="stat-label">Monto Estimado</div>
+          <input class="form-input" type="number" value="${montoEst||''}" onchange="updatePeriodicMonto('${cat.id}',this.value)" placeholder="0.00" style="padding:6px 8px;font-size:13px">
+        </div>
+        <div>
+          <div class="stat-label">Último Gasto</div>
+          <div style="font-size:14px;font-weight:600">${lastTx?fdate(lastTx.fecha):'Sin registro'}</div>
+          ${daysSinceLast!==null?`<div style="font-size:12px;color:${isOverdue?'var(--warning)':'var(--text-muted)'}">Hace ${daysSinceLast} días${isOverdue?' ⚠️':''}</div>`:''}
+        </div>
+        <div>
+          <div class="stat-label">Promedio</div>
+          <div style="font-size:14px;font-weight:600">${avgDays?'Cada '+avgDays+' días':'Calculando...'}</div>
+          ${avgDays?`<div style="font-size:12px;color:var(--text-muted)">≈ ${money(montoEst/(avgDays/30))}/mes</div>`:''}
+        </div>
+      </div>
+      ${spentThisMonth>0?`<div style="margin-top:12px;padding:8px 12px;background:var(--bg-tertiary);border-radius:var(--radius-sm);font-size:13px">💳 Gastado este mes: <span class="mono fw-700" style="color:var(--danger)">${money(spentThisMonth)}</span></div>`:''}
+      ${catTx.length>0?`<div style="margin-top:12px"><div class="stat-label">Últimos 5 gastos</div>${catTx.slice(0,5).map(t=>`<div class="flex-between" style="padding:4px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">${fdate(t.fecha)}</span><span class="mono" style="font-size:12px;font-weight:600">${money(t.monto)}</span></div>`).join('')}</div>`:''}
+    </div>`;
+  }).join('');
+
+  // ---- NEW CATEGORY FORM ----
+  const newCatForm=`<div class="card mb-6" id="newCatForm" style="display:none">
+    <div class="card-title">Nueva Categoría</div>
+    <div class="grid-2" style="gap:12px">
+      <div class="form-group"><label class="form-label">Emoji</label><input class="form-input" id="ncEmoji" placeholder="📦" maxlength="4" style="width:80px;font-size:20px;text-align:center"></div>
+      <div class="form-group"><label class="form-label">Nombre</label><input class="form-input" id="ncNombre" placeholder="Nombre de la categoría"></div>
+      <div class="form-group"><label class="form-label">Tipo</label><select class="form-select" id="ncTipoGasto"><option value="fijo">📅 Gasto Fijo Mensual</option><option value="periodico">🔁 Gasto Periódico</option></select></div>
+      <div class="form-group"><label class="form-label">Monto Inicial (opcional)</label><input class="form-input" type="number" id="ncMontoInit" placeholder="0.00"></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button class="btn btn-primary" onclick="saveNewCategory()">💾 Guardar</button>
+      <button class="btn btn-ghost" onclick="$('#newCatForm').style.display='none'">Cancelar</button>
+    </div>
+  </div>`;
+
   const monthPctLabel=Math.round(monthProgress*100);
 
-  return `<div class="page-header"><h2>Presupuesto Mensual</h2><p>${monthLabel(cm)} — Día ${dayOfMonth} de ${daysInMonth} (${monthPctLabel}% del mes)</p></div>
+  return `<div class="page-header">
+    <div class="flex-between">
+      <div><h2>Presupuesto</h2><p>${monthLabel(cm)} — Día ${dayOfMonth} de ${daysInMonth} (${monthPctLabel}% del mes)</p></div>
+      <button class="btn btn-primary" onclick="$('#newCatForm').style.display='block'">➕ Nueva Categoría</button>
+    </div>
+  </div>
+  ${newCatForm}
   <div class="grid-3 mb-6">
-    <div class="stat-card"><div class="stat-label">Provisión Mensual</div><div class="stat-value">${money(totalP)}</div><div class="stat-sub">Incluye provisiones no mensuales</div></div>
-    <div class="stat-card"><div class="stat-label">Total Gastado</div><div class="stat-value negative">${money(totalG)}</div></div>
-    <div class="stat-card"><div class="stat-label">Remanente</div><div class="stat-value ${totalP-totalG>=0?'positive':'negative'}">${money(totalP-totalG)}</div></div>
+    <div class="stat-card"><div class="stat-label">Presupuesto Fijos</div><div class="stat-value">${money(totalPFijo)}</div></div>
+    <div class="stat-card"><div class="stat-label">Gastado (Fijos)</div><div class="stat-value negative">${money(totalGFijo)}</div></div>
+    <div class="stat-card"><div class="stat-label">Remanente</div><div class="stat-value ${totalPFijo-totalGFijo>=0?'positive':'negative'}">${money(totalPFijo-totalGFijo)}</div></div>
   </div>
   ${chartHTML}
-  <div class="card"><div class="card-title">Partidas Presupuestarias</div><div class="table-container"><table><thead><tr><th>Categoría</th><th>Monto / Frecuencia</th><th>Gastado</th><th>Remanente</th><th>Progreso</th><th>Estado</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  <div class="card mb-6"><div class="card-title">📅 Gastos Fijos Mensuales</div><div class="table-container"><table><thead><tr><th>Categoría</th><th>Presupuesto</th><th>Gastado</th><th>Remanente</th><th>Progreso</th><th>Estado</th><th></th></tr></thead><tbody>${fijoRows}</tbody></table></div></div>
+  <div><div class="card-title mb-4">🔁 Gastos Periódicos</div>${periodicoRows.length>0?periodicoRows:'<div class="card"><div class="empty-state"><div class="empty-icon">🔁</div><p>No hay gastos periódicos configurados</p></div></div>'}</div>`;
 }
 
 // ============================================================
@@ -1105,35 +1165,61 @@ async function saveEditLoan(id) {
 }
 
 let _budgetTimer=null;
-async function updateBudgetFull(catId, value) {
-  const cat=state.budgetCategories.find(c=>c.id===catId);
-  const freq=cat?cat.frecuencia||'mensual':'mensual';
-  const freqDiv={mensual:1,bimestral:2,trimestral:3,semestral:6,anual:12};
-  const montoTotal=Number(value)||0;
-  const provision=montoTotal/(freqDiv[freq]||1);
-  state.budgetCategories=state.budgetCategories.map(c=>c.id===catId?{...c,monto_total:montoTotal,presupuesto:provision}:c);
+async function updateBudgetFijo(catId, value) {
+  const v=Number(value)||0;
+  state.budgetCategories=state.budgetCategories.map(c=>c.id===catId?{...c,presupuesto:v}:c);
   clearTimeout(_budgetTimer);
   _budgetTimer=setTimeout(async()=>{
-    await db.from('budget_categories').update({monto_total:montoTotal,presupuesto:provision}).eq('id',catId);
+    await db.from('budget_categories').update({presupuesto:v}).eq('id',catId);
   },600);
 }
 
-async function updateBudgetFreq(catId, freq) {
-  const cat=state.budgetCategories.find(c=>c.id===catId);
-  const freqDiv={mensual:1,bimestral:2,trimestral:3,semestral:6,anual:12};
-  const montoTotal=Number(cat.monto_total)||Number(cat.presupuesto)||0;
-  const provision=montoTotal/(freqDiv[freq]||1);
-  state.budgetCategories=state.budgetCategories.map(c=>c.id===catId?{...c,frecuencia:freq,presupuesto:provision}:c);
-  await db.from('budget_categories').update({frecuencia:freq,presupuesto:provision}).eq('id',catId);
-  render();
+async function updatePeriodicMonto(catId, value) {
+  const v=Number(value)||0;
+  state.budgetCategories=state.budgetCategories.map(c=>c.id===catId?{...c,monto_total:v}:c);
+  clearTimeout(_budgetTimer);
+  _budgetTimer=setTimeout(async()=>{
+    await db.from('budget_categories').update({monto_total:v}).eq('id',catId);
+  },600);
 }
 
-// Keep old function name for backwards compatibility
-async function updateBudget(catId, value) { updateBudgetFull(catId, value); }
-
-function updateBudgetDisplay(changedCatId) {
-  // simplified - just re-render on frequency changes
+async function convertCat(catId, newTipo) {
+  const labels={fijo:'Gasto Fijo Mensual',periodico:'Gasto Periódico'};
+  if(!confirm(`¿Convertir esta categoría a ${labels[newTipo]}?`)) return;
+  await db.from('budget_categories').update({tipo_gasto:newTipo,frecuencia:newTipo==='fijo'?'mensual':'periodico'}).eq('id',catId);
+  await loadAll(); render();
 }
+
+async function deleteCat(catId) {
+  if(!confirm('¿Eliminar esta categoría? Las transacciones asociadas no se borran.')) return;
+  await db.from('budget_categories').delete().eq('id',catId);
+  await loadAll(); render();
+}
+
+async function saveNewCategory() {
+  const emoji=$('#ncEmoji').value.trim()||'📦';
+  const nombre=$('#ncNombre').value.trim();
+  if(!nombre) return alert('Ingresa un nombre');
+  const tipo=$('#ncTipoGasto').value;
+  const monto=Number($('#ncMontoInit').value)||0;
+  const id=nombre.toLowerCase().replace(/[^a-z0-9]/g,'-').substring(0,25)+'-'+Date.now().toString(36);
+  const orden=state.budgetCategories.length+1;
+  
+  await db.from('budget_categories').insert({
+    id, nombre, icono:emoji, orden,
+    tipo_gasto:tipo,
+    frecuencia:tipo==='fijo'?'mensual':'periodico',
+    presupuesto:tipo==='fijo'?monto:0,
+    monto_total:tipo==='periodico'?monto:0
+  });
+  await loadAll(); render();
+}
+
+// Backwards compatibility
+async function updateBudgetFull(catId, value) { updateBudgetFijo(catId, value); }
+async function updateBudgetFreq(catId, freq) {}
+async function updateBudget(catId, value) { updateBudgetFijo(catId, value); }
+function updateBudgetDisplay() {}
 
 async function addVarIncome() {
   const monto=Number($('#viMonto').value);
