@@ -337,14 +337,16 @@ function viewDashboard() {
   const totalIng=ingresosFijos+ingresosVar;
   const deudaTC=state.creditCards.reduce((s,c)=>s+Number(c.saldo_actual),0);
   const deudaP=state.loans.reduce((s,l)=>s+Number(l.monto_adeudado),0);
-  const presTotal=state.budgetCategories.reduce((s,c)=>s+Number(c.presupuesto),0);
-  const presUsado=state.budgetCategories.reduce((s,cat)=>{
+  const fijosCats=state.budgetCategories.filter(c=>(c.tipo_gasto||'fijo')!=='periodico');
+  const presTotal=fijosCats.reduce((s,c)=>s+Number(c.presupuesto),0);
+  const presUsado=fijosCats.reduce((s,cat)=>{
     return s+mtx.filter(t=>t.tipo==='gasto'&&t.categoria===cat.id).reduce((sum,t)=>sum+Number(t.monto),0);
   },0);
 
-  // Alerts
+  // Alerts (only for fixed monthly categories, not periodic)
   let alerts='';
   state.budgetCategories.forEach(cat=>{
+    if(cat.tipo_gasto==='periodico') return;
     if(Number(cat.presupuesto)===0) return;
     const spent=mtx.filter(t=>t.tipo==='gasto'&&t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
     if(spent>=Number(cat.presupuesto)) alerts+=`<div class="alert alert-danger">🚨 ${cat.icono} ${cat.nombre}: Presupuesto excedido — ${money(spent)} / ${money(cat.presupuesto)}</div>`;
@@ -377,7 +379,7 @@ function viewDashboard() {
   if(presTotal>0) {
     const pctUsed=pct(presUsado,presTotal);
     const color=presUsado>presTotal?'var(--danger)':presUsado>presTotal*0.85?'var(--warning)':'var(--success)';
-    let cats=state.budgetCategories.filter(c=>Number(c.presupuesto)>0).slice(0,5).map(cat=>{
+    let cats=fijosCats.filter(c=>Number(c.presupuesto)>0).slice(0,5).map(cat=>{
       const sp=mtx.filter(t=>t.tipo==='gasto'&&t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
       const p=pct(sp,Number(cat.presupuesto));
       return `<div style="margin-bottom:10px"><div class="flex-between" style="margin-bottom:4px"><span style="font-size:12px">${cat.icono} ${cat.nombre}</span><span class="mono" style="font-size:11px;color:${p>100?'var(--danger)':'var(--text-secondary)'}">${money(sp)} / ${money(cat.presupuesto)}</span></div><div class="progress-bar" style="height:5px"><div class="progress-fill" style="width:${clamp(p,0,100)}%;background:${p>100?'var(--danger)':p>85?'var(--warning)':'var(--accent)'}"></div></div></div>`;
