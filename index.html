@@ -171,8 +171,9 @@ tr:hover td { background:var(--bg-tertiary); }
   .sidebar { display:none; }
   .main { margin-left:0; padding:20px; padding-bottom:80px; }
   .grid-2,.grid-3,.grid-4 { grid-template-columns:1fr; }
-  .mobile-nav { display:flex; position:fixed; bottom:0; left:0; right:0; background:var(--bg-secondary); border-top:1px solid var(--border); z-index:100; padding:8px 4px; justify-content:space-around; }
-  .mobile-nav button { display:flex; flex-direction:column; align-items:center; font-size:10px; color:var(--text-muted); cursor:pointer; padding:4px 8px; border-radius:8px; background:none; border:none; font-family:var(--font-sans); min-width:56px; }
+  .mobile-nav { display:flex; position:fixed; bottom:0; left:0; right:0; background:var(--bg-secondary); border-top:1px solid var(--border); z-index:100; padding:8px 4px; overflow-x:auto; -webkit-overflow-scrolling:touch; gap:2px; }
+  .mobile-nav::-webkit-scrollbar { display:none; }
+  .mobile-nav button { display:flex; flex-direction:column; align-items:center; font-size:9px; color:var(--text-muted); cursor:pointer; padding:4px 6px; border-radius:8px; background:none; border:none; font-family:var(--font-sans); min-width:52px; flex-shrink:0; }
   .mobile-nav button.active { color:var(--accent); }
   .mobile-nav button span { font-size:20px; }
 }
@@ -308,8 +309,12 @@ function renderMobileNav() {
   const items = [
     {id:'dashboard',icon:'📊',label:'Inicio'},
     {id:'transacciones',icon:'💳',label:'Trans.'},
-    {id:'presupuesto',icon:'📋',label:'Presup.'},
     {id:'tarjetas',icon:'💎',label:'Tarjetas'},
+    {id:'prestamos',icon:'🏦',label:'Prést.'},
+    {id:'ahorros',icon:'🐷',label:'Ahorros'},
+    {id:'presupuesto',icon:'📋',label:'Presup.'},
+    {id:'ingresos',icon:'💵',label:'Ingres.'},
+    {id:'flujo-caja',icon:'📈',label:'Flujo'},
     {id:'analisis',icon:'🔍',label:'Análisis'},
   ];
   return `<nav class="mobile-nav">${items.map(i=>`<button class="${state.section===i.id?'active':''}" data-nav="${i.id}"><span>${i.icon}</span>${i.label}</button>`).join('')}</nav>`;
