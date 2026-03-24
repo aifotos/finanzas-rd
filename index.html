@@ -338,7 +338,7 @@ function viewDashboard() {
   const deudaTC=state.creditCards.reduce((s,c)=>s+Number(c.saldo_actual),0);
   const deudaP=state.loans.reduce((s,l)=>s+Number(l.monto_adeudado),0);
   const fijosCats=state.budgetCategories.filter(c=>(c.tipo_gasto||'fijo')!=='periodico');
-  const presTotal=fijosCats.reduce((s,c)=>s+Number(c.presupuesto),0);
+  const presTotal=fijosCats.reduce((s,c)=>s+(Number(c.presupuesto_max)||Number(c.presupuesto)||0),0);
   const presUsado=fijosCats.reduce((s,cat)=>{
     return s+mtx.filter(t=>t.tipo==='gasto'&&t.categoria===cat.id).reduce((sum,t)=>sum+Number(t.monto),0);
   },0);
@@ -347,10 +347,11 @@ function viewDashboard() {
   let alerts='';
   state.budgetCategories.forEach(cat=>{
     if(cat.tipo_gasto==='periodico') return;
-    if(Number(cat.presupuesto)===0) return;
+    const budRef=Number(cat.presupuesto_max)||Number(cat.presupuesto)||0;
+    if(budRef===0) return;
     const spent=mtx.filter(t=>t.tipo==='gasto'&&t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
-    if(spent>=Number(cat.presupuesto)) alerts+=`<div class="alert alert-danger">🚨 ${cat.icono} ${cat.nombre}: Presupuesto excedido — ${money(spent)} / ${money(cat.presupuesto)}</div>`;
-    else if(spent>=Number(cat.presupuesto)*0.85) alerts+=`<div class="alert alert-warning">⚠️ ${cat.icono} ${cat.nombre}: Cerca del límite — ${money(spent)} / ${money(cat.presupuesto)}</div>`;
+    if(spent>=budRef) alerts+=`<div class="alert alert-danger">🚨 ${cat.icono} ${cat.nombre}: Presupuesto excedido — ${money(spent)} / ${money(budRef)}</div>`;
+    else if(spent>=budRef*0.85) alerts+=`<div class="alert alert-warning">⚠️ ${cat.icono} ${cat.nombre}: Cerca del límite — ${money(spent)} / ${money(budRef)}</div>`;
   });
 
   // Upcoming payments
@@ -694,7 +695,7 @@ function viewPresupuesto() {
   const fijos=state.budgetCategories.filter(c=>(c.tipo_gasto||'fijo')==='fijo');
   const periodicos=state.budgetCategories.filter(c=>c.tipo_gasto==='periodico');
   
-  const totalPFijo=fijos.reduce((s,c)=>s+Number(c.presupuesto||0),0);
+  const totalPFijo=fijos.reduce((s,c)=>s+(Number(c.presupuesto_max)||Number(c.presupuesto)||0),0);
   const totalGFijo=fijos.reduce((s,c)=>s+mtx.filter(t=>t.categoria===c.id).reduce((sum,t)=>sum+Number(t.monto),0),0);
   
   const today=new Date();
@@ -703,9 +704,10 @@ function viewPresupuesto() {
   const monthProgress=dayOfMonth/daysInMonth;
 
   // ---- CHART: Fixed budget vs actual ----
-  const chartCats=fijos.filter(c=>Number(c.presupuesto)>0).map(cat=>{
+  const chartCats=fijos.filter(c=>(Number(c.presupuesto_max)||Number(c.presupuesto))>0).map(cat=>{
     const spent=mtx.filter(t=>t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
-    return {...cat,spent,budget:Number(cat.presupuesto)};
+    const budget=Number(cat.presupuesto_max)||Number(cat.presupuesto)||0;
+    return {...cat,spent,budget};
   });
   const chartMax=chartCats.length>0?Math.max(...chartCats.map(c=>Math.max(c.spent,c.budget))):1;
   let chartHTML='';
@@ -735,24 +737,34 @@ function viewPresupuesto() {
   // ---- FIXED ROWS ----
   const fijoRows=fijos.map(cat=>{
     const spent=mtx.filter(t=>t.categoria===cat.id).reduce((s,t)=>s+Number(t.monto),0);
-    const bud=Number(cat.presupuesto)||0;
-    const rem=bud-spent;
-    const p=bud>0?pct(spent,bud):0;
-    const st=p>100?'danger':p>85?'warning':'success';
+    const bMin=Number(cat.presupuesto_min)||0;
+    const bMax=Number(cat.presupuesto_max)||Number(cat.presupuesto)||0;
+    const hasRange=bMin>0 && bMax>0 && bMin!==bMax;
+    const budgetRef=bMax||bMin; // use max as the reference for progress
+    const rem=budgetRef-spent;
+    const p=budgetRef>0?pct(spent,budgetRef):0;
+    const st=p>100?'danger':(hasRange&&spent>bMin?'warning':p>85?'warning':'success');
     let trend='';
-    if(bud>0 && spent>0) {
+    if(budgetRef>0 && spent>0) {
       const proj=spent/monthProgress;
-      const projP=pct(proj,bud);
+      const projP=pct(proj,budgetRef);
       if(projP>110) trend=`<div style="font-size:10px;color:var(--danger);margin-top:2px">📈 Proyección: ${money(proj)}</div>`;
       else if(projP>90) trend=`<div style="font-size:10px;color:var(--warning);margin-top:2px">📈 Proyección: ${money(proj)}</div>`;
     }
-    return `<tr>
+    return `<tr data-cat="${cat.id}">
       <td><div class="fw-700">${cat.icono} ${cat.nombre}</div>${trend}</td>
-      <td><input class="form-input" type="number" value="${bud||''}" onchange="updateBudgetFijo('${cat.id}',this.value)" placeholder="0.00" style="width:120px;padding:6px 8px;font-size:13px"></td>
-      <td class="mono" style="color:var(--danger)">${money(spent)}</td>
-      <td class="mono" style="color:${rem>=0?'var(--success)':'var(--danger)'}">${money(rem)}</td>
-      <td style="width:100px"><div class="progress-bar" style="height:6px"><div class="progress-fill" style="width:${clamp(p,0,100)}%;background:var(--${st})"></div></div></td>
-      <td>${bud>0?`<span class="badge badge-${st}">${p>100?'+'+Math.round(p-100)+'%':Math.round(p)+'%'}</span>`:''}</td>
+      <td><div class="flex" style="gap:4px;align-items:center">
+        <input class="form-input bud-min" type="number" value="${bMin||''}" onchange="updateBudgetRange('${cat.id}','min',this.value)" placeholder="Min" style="width:80px;padding:6px 8px;font-size:12px" title="Mínimo">
+        <span style="color:var(--text-muted);font-size:12px">-</span>
+        <input class="form-input bud-max" type="number" value="${bMax||''}" onchange="updateBudgetRange('${cat.id}','max',this.value)" placeholder="Max" style="width:80px;padding:6px 8px;font-size:12px" title="Máximo">
+      </div>${hasRange?`<div style="font-size:10px;color:var(--text-muted);margin-top:2px">${money(bMin)} - ${money(bMax)}</div>`:''}</td>
+      <td class="mono td-spent" style="color:var(--danger)">${money(spent)}</td>
+      <td class="mono td-rem" style="color:${rem>=0?'var(--success)':'var(--danger)'}">${money(rem)}</td>
+      <td style="width:100px">${budgetRef>0?`<div class="progress-bar" style="height:6px;position:relative">
+        ${hasRange?`<div style="position:absolute;left:${clamp(pct(bMin,bMax),0,100)}%;top:-1px;width:1px;height:8px;background:var(--warning);z-index:2" title="Mín: ${money(bMin)}"></div>`:''}
+        <div class="progress-fill" style="width:${clamp(p,0,100)}%;background:var(--${st})"></div>
+      </div>`:''}</td>
+      <td class="td-badge">${budgetRef>0?`<span class="badge badge-${st}">${p>100?'+'+Math.round(p-100)+'%':Math.round(p)+'%'}</span>`:''}</td>
       <td><div class="flex gap-2"><button class="btn-icon" title="Convertir a periódico" onclick="convertCat('${cat.id}','periodico')">🔄</button><button class="btn-icon" title="Eliminar" onclick="deleteCat('${cat.id}')" style="color:var(--danger)">🗑</button></div></td>
     </tr>`;
   }).join('');
@@ -843,7 +855,7 @@ function viewPresupuesto() {
     <div class="stat-card"><div class="stat-label">Remanente</div><div class="stat-value ${totalPFijo-totalGFijo>=0?'positive':'negative'}">${money(totalPFijo-totalGFijo)}</div></div>
   </div>
   ${chartHTML}
-  <div class="card mb-6"><div class="card-title">📅 Gastos Fijos Mensuales</div><div class="table-container"><table><thead><tr><th>Categoría</th><th>Presupuesto</th><th>Gastado</th><th>Remanente</th><th>Progreso</th><th>Estado</th><th></th></tr></thead><tbody>${fijoRows}</tbody></table></div></div>
+  <div class="card mb-6"><div class="card-title">📅 Gastos Fijos Mensuales</div><div class="table-container"><table><thead><tr><th>Categoría</th><th>Presupuesto (Min - Max)</th><th>Gastado</th><th>Remanente</th><th>Progreso</th><th>Estado</th><th></th></tr></thead><tbody>${fijoRows}</tbody></table></div></div>
   <div><div class="card-title mb-4">🔁 Gastos Periódicos</div>${periodicoRows.length>0?periodicoRows:'<div class="card"><div class="empty-state"><div class="empty-icon">🔁</div><p>No hay gastos periódicos configurados</p></div></div>'}</div>`;
 }
 
@@ -1167,13 +1179,68 @@ async function saveEditLoan(id) {
 }
 
 let _budgetTimer=null;
-async function updateBudgetFijo(catId, value) {
+
+async function updateBudgetRange(catId, field, value) {
   const v=Number(value)||0;
-  state.budgetCategories=state.budgetCategories.map(c=>c.id===catId?{...c,presupuesto:v}:c);
+  // Update state
+  if(field==='min') state.budgetCategories=state.budgetCategories.map(c=>c.id===catId?{...c,presupuesto_min:v,presupuesto:v}:c);
+  else state.budgetCategories=state.budgetCategories.map(c=>c.id===catId?{...c,presupuesto_max:v}:c);
+  
+  // Real-time DOM update
+  updateFijoRowDisplay(catId);
+  updateFijoTotals();
+  
+  // Debounced DB save
   clearTimeout(_budgetTimer);
   _budgetTimer=setTimeout(async()=>{
-    await db.from('budget_categories').update({presupuesto:v}).eq('id',catId);
+    const updates=field==='min'?{presupuesto_min:v,presupuesto:v}:{presupuesto_max:v};
+    await db.from('budget_categories').update(updates).eq('id',catId);
   },600);
+}
+
+function updateFijoRowDisplay(catId) {
+  const cat=state.budgetCategories.find(c=>c.id===catId);
+  if(!cat) return;
+  const cm=curMonth();
+  const mtx=state.transactions.filter(t=>t.fecha?.startsWith(cm)&&t.tipo==='gasto');
+  const spent=mtx.filter(t=>t.categoria===catId).reduce((s,t)=>s+Number(t.monto),0);
+  const bMax=Number(cat.presupuesto_max)||Number(cat.presupuesto)||0;
+  const bMin=Number(cat.presupuesto_min)||0;
+  const budgetRef=bMax||bMin;
+  const rem=budgetRef-spent;
+  const p=budgetRef>0?pct(spent,budgetRef):0;
+  const hasRange=bMin>0&&bMax>0&&bMin!==bMax;
+  const st=p>100?'danger':(hasRange&&spent>bMin?'warning':p>85?'warning':'success');
+  
+  const row=document.querySelector(`tr[data-cat="${catId}"]`);
+  if(!row) return;
+  const tdSpent=row.querySelector('.td-spent');
+  const tdRem=row.querySelector('.td-rem');
+  const tdBadge=row.querySelector('.td-badge');
+  if(tdRem) tdRem.innerHTML=`<span class="mono" style="color:${rem>=0?'var(--success)':'var(--danger)'}">${money(rem)}</span>`;
+  if(tdBadge) tdBadge.innerHTML=budgetRef>0?`<span class="badge badge-${st}">${p>100?'+'+Math.round(p-100)+'%':Math.round(p)+'%'}</span>`:'';
+  const bar=row.querySelector('.progress-fill');
+  if(bar){bar.style.width=clamp(p,0,100)+'%';bar.style.background=`var(--${st})`;}
+}
+
+function updateFijoTotals() {
+  const fijos=state.budgetCategories.filter(c=>(c.tipo_gasto||'fijo')!=='periodico');
+  const cm=curMonth();
+  const mtx=state.transactions.filter(t=>t.fecha?.startsWith(cm)&&t.tipo==='gasto');
+  const totalP=fijos.reduce((s,c)=>s+(Number(c.presupuesto_max)||Number(c.presupuesto)||0),0);
+  const totalG=fijos.reduce((s,c)=>s+mtx.filter(t=>t.categoria===c.id).reduce((sum,t)=>sum+Number(t.monto),0),0);
+  
+  const statCards=$$('.stat-card .stat-value');
+  if(statCards.length>=3) {
+    statCards[0].textContent=money(totalP);
+    statCards[1].textContent=money(totalG);
+    statCards[2].textContent=money(totalP-totalG);
+    statCards[2].className='stat-value '+((totalP-totalG>=0)?'positive':'negative');
+  }
+}
+
+async function updateBudgetFijo(catId, value) {
+  updateBudgetRange(catId, 'max', value);
 }
 
 async function updatePeriodicMonto(catId, value) {
@@ -1218,9 +1285,9 @@ async function saveNewCategory() {
 }
 
 // Backwards compatibility
-async function updateBudgetFull(catId, value) { updateBudgetFijo(catId, value); }
-async function updateBudgetFreq(catId, freq) {}
-async function updateBudget(catId, value) { updateBudgetFijo(catId, value); }
+async function updateBudgetFull(catId, value) { updateBudgetRange(catId, 'max', value); }
+async function updateBudgetFreq() {}
+async function updateBudget(catId, value) { updateBudgetRange(catId, 'max', value); }
 function updateBudgetDisplay() {}
 
 async function addVarIncome() {
