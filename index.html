@@ -285,7 +285,7 @@ function renderSidebar() {
     {id:'dashboard',icon:'📊',label:'Dashboard'},
     {id:'transacciones',icon:'💳',label:'Transacciones'},
     {section:'Cuentas'},
-    {id:'tarjetas',icon:'💎',label:'Tarjetas de Crédito'},
+    {id:'tarjetas',icon:'💎',label:'Tarjetas'},
     {id:'prestamos',icon:'🏦',label:'Préstamos'},
     {id:'ahorros',icon:'🐷',label:'Fondo de Inversión'},
     {section:'Planificación'},
@@ -386,6 +386,14 @@ function viewDashboard() {
     }
   });
 
+  // Debit card expiry alerts
+  state.creditCards.filter(c=>c.tipo_tarjeta==='debito'&&c.fecha_vencimiento).forEach(c=>{
+    const exp=new Date(c.fecha_vencimiento+'T00:00:00');
+    const daysToExp=Math.ceil((exp-now)/(1000*60*60*24));
+    if(daysToExp<=0) alerts+=`<div class="alert alert-danger">🚨 🏧 ${c.nombre_display||c.banco}: Tarjeta vencida desde ${fdate(c.fecha_vencimiento)}</div>`;
+    else if(daysToExp<=30) alerts+=`<div class="alert alert-warning">⚠️ 🏧 ${c.nombre_display||c.banco}: Vence en ${daysToExp} días (${fdate(c.fecha_vencimiento)})</div>`;
+  });
+
   // Budget mini
   let budgetMini='';
   if(presTotal>0) {
@@ -477,43 +485,52 @@ function viewTransacciones() {
 // ============================================================
 function viewTarjetas() {
   const now=new Date();
-  const cards=state.creditCards.map(cc=>{
+  const creditos=state.creditCards.filter(c=>c.tipo_tarjeta!=='debito');
+  const debitos=state.creditCards.filter(c=>c.tipo_tarjeta==='debito');
+
+  function renderCard(cc) {
     const isCredit=cc.tipo_tarjeta!=='debito';
+    const cardColor=cc.color||'#2d5a27';
     const util=isCredit?pct(Number(cc.saldo_actual),Number(cc.monto_aprobado)):0;
     const disp=Number(cc.monto_aprobado)-Number(cc.saldo_actual);
-    const diasC=isCredit?daysUntil(cc.fecha_corte):0;
-    const dim=new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
-    const dayPos=((now.getDate()-1)/dim)*100;
-    const cortePos=isCredit?((cc.fecha_corte-1)/dim)*100:0;
-    const tipoBadge=isCredit?'💳 Crédito':'🏧 Débito';
     const displayName=cc.nombre_display||('Banco '+cc.banco);
 
-    let deadlineInfo='';
+    // Credit-specific info
+    let deadlineInfo='',cycleVis='';
     if(isCredit){
+      const diasC=daysUntil(cc.fecha_corte);
       const dl=getDeadline(cc.fecha_corte,cc.dias_limite_pago);
       const diasP=Math.ceil((dl-now)/(1000*60*60*24));
+      const dim=new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
+      const dayPos=((now.getDate()-1)/dim)*100;
+      const cortePos=((cc.fecha_corte-1)/dim)*100;
       deadlineInfo=`<div><div class="stat-label">Fecha de Corte</div><div style="font-size:14px;font-weight:600">Día ${cc.fecha_corte} <span class="badge badge-neutral" style="margin-left:4px">en ${diasC} días</span></div></div>
       <div><div class="stat-label">Fecha Límite Pago</div><div style="font-size:14px;font-weight:600">${dl.getDate()} ${MONTHS_ES[dl.getMonth()]} <span class="badge ${diasP<=5?'badge-danger':diasP<=10?'badge-warning':'badge-success'}" style="margin-left:4px">${diasP} días</span></div></div>
       <div><div class="stat-label">Sobregiro</div><div style="font-size:14px">${money(cc.monto_sobregiro)}</div></div>`;
-    }
-
-    let cycleVis='';
-    if(isCredit){
       cycleVis=`<div style="margin-top:20px"><div class="stat-label">Ciclo de Facturación</div>
         <div style="position:relative;height:40px;background:var(--bg-tertiary);border-radius:8px;overflow:hidden;margin-top:8px">
-          <div style="position:absolute;left:0;top:0;height:100%;width:${dayPos}%;background:var(--accent);opacity:0.3;border-radius:8px"></div>
-          <div style="position:absolute;left:${dayPos}%;top:0;width:3px;height:100%;background:var(--accent);border-radius:2px;z-index:2"></div>
+          <div style="position:absolute;left:0;top:0;height:100%;width:${dayPos}%;background:${cardColor};opacity:0.3;border-radius:8px"></div>
+          <div style="position:absolute;left:${dayPos}%;top:0;width:3px;height:100%;background:${cardColor};border-radius:2px;z-index:2"></div>
           <div style="position:absolute;left:${cortePos}%;top:0;width:2px;height:100%;background:var(--danger);border-radius:1px;z-index:2"></div>
         </div>
-        <div class="flex-between" style="margin-top:4px"><span style="font-size:10px;color:var(--accent);font-weight:600">Hoy (${now.getDate()})</span><span style="font-size:10px;color:var(--danger);font-weight:600">Corte (${cc.fecha_corte})</span></div>
+        <div class="flex-between" style="margin-top:4px"><span style="font-size:10px;color:${cardColor};font-weight:600">Hoy (${now.getDate()})</span><span style="font-size:10px;color:var(--danger);font-weight:600">Corte (${cc.fecha_corte})</span></div>
       </div>`;
     }
-    
+
+    // Debit-specific: expiry alert
+    let expiryInfo='';
+    if(!isCredit && cc.fecha_vencimiento) {
+      const exp=new Date(cc.fecha_vencimiento+'T00:00:00');
+      const daysToExp=Math.ceil((exp-now)/(1000*60*60*24));
+      const expColor=daysToExp<=30?'var(--danger)':daysToExp<=90?'var(--warning)':'var(--text-muted)';
+      expiryInfo=`<div><div class="stat-label">Vencimiento</div><div style="font-size:14px;font-weight:600">${fdate(cc.fecha_vencimiento)} <span class="badge ${daysToExp<=30?'badge-danger':daysToExp<=90?'badge-warning':'badge-neutral'}" style="margin-left:4px">${daysToExp>0?daysToExp+' días':'Vencida'}</span></div></div>`;
+    }
+
     return `<div>
-      <div class="cc-visual ${cc.id==='popular'?'popular':''}" style="${!isCredit?'background:linear-gradient(135deg,#4a4a4a,#2a2a2a)':''}">
-        <div class="flex-between"><div style="font-size:16px;font-weight:700">${displayName}</div><span style="font-size:11px;background:rgba(255,255,255,0.2);padding:2px 8px;border-radius:10px">${tipoBadge}</span></div>
+      <div class="cc-visual" style="background:linear-gradient(135deg,${cardColor},${cardColor}88)">
+        <div class="flex-between"><div style="font-size:16px;font-weight:700">${displayName}</div><span style="font-size:11px;background:rgba(255,255,255,0.2);padding:2px 8px;border-radius:10px">${isCredit?'💳 Crédito':'🏧 Débito'}</span></div>
         <div style="font-size:11px;opacity:0.7;text-transform:uppercase;letter-spacing:1px;margin-top:10px">${isCredit?'Saldo Actual':'Saldo Disponible'}</div>
-        <div class="mono" style="font-size:24px;font-weight:700;margin-top:4px">${money(isCredit?cc.saldo_actual:disp)}</div>
+        <div class="mono" style="font-size:24px;font-weight:700;margin-top:4px">${money(isCredit?cc.saldo_actual:cc.saldo_actual)}</div>
         ${isCredit?`<div style="margin-top:12px;height:6px;background:rgba(255,255,255,0.2);border-radius:3px;overflow:hidden"><div style="height:100%;border-radius:3px;width:${clamp(util,0,100)}%;background:${util>80?'#e74c3c':util>50?'#f0c040':'#2ecc71'}"></div></div><div style="font-size:11px;opacity:0.7;margin-top:6px">${util.toFixed(1)}% utilizado</div>`:''}
       </div>
       <div class="card mt-4">
@@ -524,8 +541,6 @@ function viewTarjetas() {
             <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteCard('${cc.id}')">🗑</button>
           </div>
         </div>
-        
-        <!-- Quick Adjust Balance -->
         <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:12px;margin-bottom:16px">
           <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:8px">⚡ Ajustar Saldo Rápido</div>
           <div class="flex gap-2">
@@ -533,27 +548,34 @@ function viewTarjetas() {
             <button class="btn btn-primary btn-sm" onclick="adjustCardBalance('${cc.id}')">Ajustar</button>
           </div>
         </div>
-
         <div class="grid-2" style="gap:12px">
-          <div><div class="stat-label">Límite Aprobado</div><div class="mono fw-700" style="font-size:16px">${money(cc.monto_aprobado)}</div></div>
-          <div><div class="stat-label">Disponible</div><div class="mono fw-700" style="font-size:16px;color:${disp>0?'var(--success)':'var(--danger)'}">${money(disp)}</div></div>
+          ${isCredit?`<div><div class="stat-label">Límite Aprobado</div><div class="mono fw-700" style="font-size:16px">${money(cc.monto_aprobado)}</div></div>
+          <div><div class="stat-label">Disponible</div><div class="mono fw-700" style="font-size:16px;color:${disp>0?'var(--success)':'var(--danger)'}">${money(disp)}</div></div>`
+          :`<div><div class="stat-label">Banco</div><div style="font-size:14px;font-weight:600">${cc.banco}</div></div>`}
           ${deadlineInfo}
+          ${expiryInfo}
         </div>
         ${cycleVis}
       </div>
     </div>`;
-  }).join('');
+  }
 
-  // New Card Form
+  // Color presets
+  const colors=['#2d5a27','#1a3a6b','#8b0000','#4a4a4a','#1a1a1a','#6b3fa0','#c0392b','#2980b9','#d4a017','#16a085','#e67e22','#7f8c8d'];
+  const colorPicker=colors.map(c=>`<div onclick="document.getElementById('ncColor').value='${c}';document.getElementById('ncColorPreview').style.background='${c}'" style="width:28px;height:28px;border-radius:50%;background:${c};cursor:pointer;border:2px solid var(--border)"></div>`).join('');
+
+  // New Card Form with smart fields
   const newCardForm=`<div class="card mb-6" id="newCardForm" style="display:none">
     <div class="card-title">Nueva Tarjeta</div>
     <div class="grid-2" style="gap:12px">
       <div class="form-group"><label class="form-label">Banco / Nombre</label><input class="form-input" id="ncBanco" placeholder="Ej: BHD, Popular..."></div>
-      <div class="form-group"><label class="form-label">Tipo</label><select class="form-select" id="ncTipo"><option value="credito">💳 Crédito</option><option value="debito">🏧 Débito</option></select></div>
-      <div class="form-group"><label class="form-label">Límite / Monto Aprobado</label><input class="form-input" type="number" id="ncLimite" placeholder="0.00"></div>
-      <div class="form-group"><label class="form-label">Monto Sobregiro</label><input class="form-input" type="number" id="ncSobregiro" placeholder="0.00"></div>
-      <div class="form-group"><label class="form-label">Día de Corte</label><input class="form-input" type="number" id="ncCorte" placeholder="1-31" min="1" max="31"></div>
-      <div class="form-group"><label class="form-label">Días Límite de Pago (después del corte)</label><input class="form-input" type="number" id="ncDiasPago" placeholder="Ej: 25"></div>
+      <div class="form-group"><label class="form-label">Tipo</label><select class="form-select" id="ncTipo" onchange="toggleCardFields()"><option value="credito">💳 Crédito</option><option value="debito">🏧 Débito</option></select></div>
+      <div class="form-group"><label class="form-label">Color</label><div class="flex gap-2 flex-wrap" style="margin-bottom:8px">${colorPicker}</div><input type="hidden" id="ncColor" value="#2d5a27"><div id="ncColorPreview" style="width:100%;height:8px;border-radius:4px;background:#2d5a27"></div></div>
+      <div class="form-group ncCreditField"><label class="form-label">Límite Aprobado</label><input class="form-input" type="number" id="ncLimite" placeholder="0.00"></div>
+      <div class="form-group ncCreditField"><label class="form-label">Monto Sobregiro</label><input class="form-input" type="number" id="ncSobregiro" placeholder="0.00"></div>
+      <div class="form-group ncCreditField"><label class="form-label">Día de Corte</label><input class="form-input" type="number" id="ncCorte" placeholder="1-31" min="1" max="31"></div>
+      <div class="form-group ncCreditField"><label class="form-label">Días Límite de Pago</label><input class="form-input" type="number" id="ncDiasPago" placeholder="Ej: 25"></div>
+      <div class="form-group ncDebitField" style="display:none"><label class="form-label">Fecha de Vencimiento</label><input class="form-input" type="date" id="ncVencTarjeta"></div>
     </div>
     <div class="flex gap-2 mt-4">
       <button class="btn btn-primary" onclick="saveNewCard()">💾 Guardar Tarjeta</button>
@@ -561,14 +583,19 @@ function viewTarjetas() {
     </div>
   </div>`;
 
+  const creditCards=creditos.map(renderCard).join('');
+  const debitCards=debitos.map(renderCard).join('');
+
   return `<div class="page-header">
     <div class="flex-between">
-      <div><h2>Tarjetas</h2><p>Tarjetas de crédito y débito</p></div>
+      <div><h2>Tarjetas</h2><p>Administra tus tarjetas de crédito y débito</p></div>
       <button class="btn btn-primary" onclick="$('#newCardForm').style.display='block'">➕ Nueva Tarjeta</button>
     </div>
   </div>
   ${newCardForm}
-  ${cards.length>0?`<div class="grid-2 mb-6">${cards}</div>`:'<div class="card"><div class="empty-state"><div class="empty-icon">💳</div><p>No hay tarjetas registradas</p><button class="btn btn-primary btn-sm mt-4" onclick="document.getElementById(\'newCardForm\').style.display=\'block\'">Agregar primera tarjeta</button></div></div>'}`;
+  ${creditos.length>0?`<div class="card-title mb-4">💳 Tarjetas de Crédito</div><div class="grid-2 mb-6">${creditCards}</div>`:''}
+  ${debitos.length>0?`<div class="card-title mb-4">🏧 Tarjetas de Débito</div><div class="grid-2 mb-6">${debitCards}</div>`:''}
+  ${state.creditCards.length===0?'<div class="card"><div class="empty-state"><div class="empty-icon">💳</div><p>No hay tarjetas registradas</p></div></div>':''}`;
 }
 
 // ============================================================
@@ -1419,22 +1446,32 @@ async function adjustCardBalance(id) {
   await loadAll(); render();
 }
 
+function toggleCardFields() {
+  const tipo=$('#ncTipo').value;
+  const isCredit=tipo==='credito';
+  $$('.ncCreditField').forEach(el=>el.style.display=isCredit?'block':'none');
+  $$('.ncDebitField').forEach(el=>el.style.display=isCredit?'none':'block');
+}
+
 async function saveNewCard() {
   const banco=$('#ncBanco').value.trim();
   if(!banco) return alert('Ingresa el nombre del banco');
   const tipo=$('#ncTipo').value;
-  const limite=Number($('#ncLimite').value)||0;
-  const sobregiro=Number($('#ncSobregiro').value)||0;
-  const corte=Number($('#ncCorte').value)||1;
-  const diasPago=Number($('#ncDiasPago').value)||25;
+  const isCredit=tipo==='credito';
+  const color=$('#ncColor').value||'#2d5a27';
   const id=banco.toLowerCase().replace(/\s+/g,'-')+'-'+Date.now().toString(36);
-  const displayName=(tipo==='credito'?'TC ':'TD ')+banco;
+  const displayName=(isCredit?'TC ':'TD ')+banco;
 
-  await db.from('credit_cards').insert({
-    id, banco, monto_aprobado:limite, monto_sobregiro:sobregiro,
-    fecha_corte:corte, dias_limite_pago:diasPago, saldo_actual:0,
-    tipo_tarjeta:tipo, nombre_display:displayName
-  });
+  const data={
+    id, banco, tipo_tarjeta:tipo, nombre_display:displayName,
+    saldo_actual:0, color,
+    monto_aprobado:isCredit?(Number($('#ncLimite').value)||0):0,
+    monto_sobregiro:isCredit?(Number($('#ncSobregiro').value)||0):0,
+    fecha_corte:isCredit?(Number($('#ncCorte').value)||1):1,
+    dias_limite_pago:isCredit?(Number($('#ncDiasPago').value)||25):0,
+    fecha_vencimiento:(!isCredit&&$('#ncVencTarjeta').value)?$('#ncVencTarjeta').value:null,
+  };
+  await db.from('credit_cards').insert(data);
   await loadAll(); render();
 }
 
@@ -1448,39 +1485,53 @@ function showEditCard(id) {
   const cc=state.creditCards.find(c=>c.id===id);
   if(!cc) return;
   const isCredit=cc.tipo_tarjeta!=='debito';
+  const curColor=cc.color||'#2d5a27';
+  const colors=['#2d5a27','#1a3a6b','#8b0000','#4a4a4a','#1a1a1a','#6b3fa0','#c0392b','#2980b9','#d4a017','#16a085','#e67e22','#7f8c8d'];
+  const colorPicker=colors.map(c=>`<div onclick="document.getElementById('ecColor').value='${c}';document.getElementById('ecColorPrev').style.background='${c}'" style="width:24px;height:24px;border-radius:50%;background:${c};cursor:pointer;border:2px solid ${c===curColor?'white':'var(--border)'}"></div>`).join('');
+
   const html=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:999" id="editCardModal" onclick="if(event.target===this)this.remove()">
-    <div style="background:var(--bg-card);border-radius:16px;padding:28px;width:90%;max-width:500px;box-shadow:var(--shadow-md)">
+    <div style="background:var(--bg-card);border-radius:16px;padding:28px;width:90%;max-width:500px;max-height:85vh;overflow-y:auto;box-shadow:var(--shadow-md)">
       <h3 style="font-size:18px;font-weight:700;margin-bottom:20px">Editar ${cc.nombre_display||cc.banco}</h3>
       <div class="form-group"><label class="form-label">Banco / Nombre</label><input class="form-input" id="ecBanco" value="${cc.banco}"></div>
-      <div class="form-group"><label class="form-label">Nombre a Mostrar</label><input class="form-input" id="ecDisplay" value="${cc.nombre_display||''}" placeholder="Ej: TC BHD"></div>
+      <div class="form-group"><label class="form-label">Nombre a Mostrar</label><input class="form-input" id="ecDisplay" value="${cc.nombre_display||''}"></div>
       <div class="form-group"><label class="form-label">Tipo</label><select class="form-select" id="ecTipo"><option value="credito" ${isCredit?'selected':''}>💳 Crédito</option><option value="debito" ${!isCredit?'selected':''}>🏧 Débito</option></select></div>
+      <div class="form-group"><label class="form-label">Color</label><div class="flex gap-2 flex-wrap" style="margin-bottom:6px">${colorPicker}</div><input type="hidden" id="ecColor" value="${curColor}"><div id="ecColorPrev" style="width:100%;height:8px;border-radius:4px;background:${curColor}"></div></div>
       <div class="grid-2" style="gap:12px">
-        <div class="form-group"><label class="form-label">Límite Aprobado</label><input class="form-input" type="number" id="ecLimite" value="${cc.monto_aprobado}"></div>
         <div class="form-group"><label class="form-label">Saldo Actual</label><input class="form-input" type="number" id="ecSaldo" value="${cc.saldo_actual}"></div>
+        ${isCredit?`
+        <div class="form-group"><label class="form-label">Límite Aprobado</label><input class="form-input" type="number" id="ecLimite" value="${cc.monto_aprobado}"></div>
         <div class="form-group"><label class="form-label">Monto Sobregiro</label><input class="form-input" type="number" id="ecSobregiro" value="${cc.monto_sobregiro}"></div>
         <div class="form-group"><label class="form-label">Día de Corte</label><input class="form-input" type="number" id="ecCorte" value="${cc.fecha_corte}" min="1" max="31"></div>
         <div class="form-group"><label class="form-label">Días Límite Pago</label><input class="form-input" type="number" id="ecDiasPago" value="${cc.dias_limite_pago}"></div>
+        `:`
+        <div class="form-group"><label class="form-label">Fecha Vencimiento Tarjeta</label><input class="form-input" type="date" id="ecVencTarjeta" value="${cc.fecha_vencimiento||''}"></div>
+        `}
       </div>
       <div class="flex gap-2" style="justify-content:flex-end;margin-top:20px">
         <button class="btn btn-ghost" onclick="$('#editCardModal').remove()">Cancelar</button>
-        <button class="btn btn-primary" onclick="saveEditCard('${cc.id}')">💾 Guardar Cambios</button>
+        <button class="btn btn-primary" onclick="saveEditCard('${cc.id}',${isCredit})">💾 Guardar</button>
       </div>
     </div>
   </div>`;
   document.body.insertAdjacentHTML('beforeend',html);
 }
 
-async function saveEditCard(id) {
+async function saveEditCard(id, isCredit) {
   const data={
     banco:$('#ecBanco').value.trim(),
     nombre_display:$('#ecDisplay').value.trim(),
     tipo_tarjeta:$('#ecTipo').value,
-    monto_aprobado:Number($('#ecLimite').value)||0,
     saldo_actual:Number($('#ecSaldo').value)||0,
-    monto_sobregiro:Number($('#ecSobregiro').value)||0,
-    fecha_corte:Number($('#ecCorte').value)||1,
-    dias_limite_pago:Number($('#ecDiasPago').value)||25,
+    color:$('#ecColor').value||'#2d5a27',
   };
+  if(isCredit) {
+    data.monto_aprobado=Number($('#ecLimite').value)||0;
+    data.monto_sobregiro=Number($('#ecSobregiro').value)||0;
+    data.fecha_corte=Number($('#ecCorte').value)||1;
+    data.dias_limite_pago=Number($('#ecDiasPago').value)||25;
+  } else {
+    data.fecha_vencimiento=$('#ecVencTarjeta')?.value||null;
+  }
   await db.from('credit_cards').update(data).eq('id',id);
   $('#editCardModal').remove();
   await loadAll(); render();
