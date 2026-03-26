@@ -225,8 +225,9 @@ function curMonth() { const d=new Date(); return d.getFullYear()+'-'+String(d.ge
 function monthLabel(ym) { const[y,m]=ym.split('-'); return MONTHS_FULL[parseInt(m)-1]+' '+y; }
 function today() { return new Date().toISOString().split('T')[0]; }
 function daysUntil(day) { const d=new Date(),c=d.getDate(),dim=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(); return day>c?day-c:dim-c+day; }
-function getCutoff(cutDay) { const n=new Date(),y=n.getFullYear(),m=n.getMonth(); return n.getDate()<=cutDay?new Date(y,m,cutDay):new Date(y,m+1,cutDay); }
-function getDeadline(cutDay,dias) { const c=getCutoff(cutDay); c.setDate(c.getDate()+dias); return c; }
+function getLastCutoff(cutDay) { const n=new Date(),y=n.getFullYear(),m=n.getMonth(); return n.getDate()>=cutDay?new Date(y,m,cutDay):new Date(y,m-1,cutDay); }
+function getNextCutoff(cutDay) { const n=new Date(),y=n.getFullYear(),m=n.getMonth(); return n.getDate()<cutDay?new Date(y,m,cutDay):new Date(y,m+1,cutDay); }
+function getDeadline(cutDay,dias) { const c=getLastCutoff(cutDay); const d=new Date(c); d.setDate(d.getDate()+dias); return d; }
 function calcDR(bruto) {
   const afp=bruto*0.0287, sfs=bruto*0.0304, base=bruto-afp-sfs, anual=base*12;
   let isr=0;
@@ -498,14 +499,17 @@ function viewTarjetas() {
     // Credit-specific info
     let deadlineInfo='',cycleVis='';
     if(isCredit){
-      const diasC=daysUntil(cc.fecha_corte);
+      const nextCorte=getNextCutoff(cc.fecha_corte);
+      const lastCorte=getLastCutoff(cc.fecha_corte);
+      const diasNextCorte=Math.ceil((nextCorte-now)/(1000*60*60*24));
       const dl=getDeadline(cc.fecha_corte,cc.dias_limite_pago);
       const diasP=Math.ceil((dl-now)/(1000*60*60*24));
       const dim=new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
       const dayPos=((now.getDate()-1)/dim)*100;
       const cortePos=((cc.fecha_corte-1)/dim)*100;
-      deadlineInfo=`<div><div class="stat-label">Fecha de Corte</div><div style="font-size:14px;font-weight:600">Día ${cc.fecha_corte} <span class="badge badge-neutral" style="margin-left:4px">en ${diasC} días</span></div></div>
-      <div><div class="stat-label">Fecha Límite Pago</div><div style="font-size:14px;font-weight:600">${dl.getDate()} ${MONTHS_ES[dl.getMonth()]} <span class="badge ${diasP<=5?'badge-danger':diasP<=10?'badge-warning':'badge-success'}" style="margin-left:4px">${diasP} días</span></div></div>
+      deadlineInfo=`<div><div class="stat-label">Último Corte</div><div style="font-size:14px;font-weight:600">${lastCorte.getDate()} ${MONTHS_ES[lastCorte.getMonth()]}</div></div>
+      <div><div class="stat-label">Próximo Corte</div><div style="font-size:14px;font-weight:600">${nextCorte.getDate()} ${MONTHS_ES[nextCorte.getMonth()]} <span class="badge badge-neutral" style="margin-left:4px">en ${diasNextCorte} días</span></div></div>
+      <div><div class="stat-label">Fecha Límite Pago</div><div style="font-size:14px;font-weight:600">${dl.getDate()} ${MONTHS_ES[dl.getMonth()]} <span class="badge ${diasP<=0?'badge-danger':diasP<=5?'badge-danger':diasP<=10?'badge-warning':'badge-success'}" style="margin-left:4px">${diasP<=0?'Vencido':diasP+' días'}</span></div></div>
       <div><div class="stat-label">Sobregiro</div><div style="font-size:14px">${money(cc.monto_sobregiro)}</div></div>`;
       cycleVis=`<div style="margin-top:20px"><div class="stat-label">Ciclo de Facturación</div>
         <div style="position:relative;height:40px;background:var(--bg-tertiary);border-radius:8px;overflow:hidden;margin-top:8px">
