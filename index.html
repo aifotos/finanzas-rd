@@ -522,8 +522,9 @@ function viewTarjetas() {
     if(!isCredit && cc.fecha_vencimiento) {
       const exp=new Date(cc.fecha_vencimiento+'T00:00:00');
       const daysToExp=Math.ceil((exp-now)/(1000*60*60*24));
-      const expColor=daysToExp<=30?'var(--danger)':daysToExp<=90?'var(--warning)':'var(--text-muted)';
-      expiryInfo=`<div><div class="stat-label">Vencimiento</div><div style="font-size:14px;font-weight:600">${fdate(cc.fecha_vencimiento)} <span class="badge ${daysToExp<=30?'badge-danger':daysToExp<=90?'badge-warning':'badge-neutral'}" style="margin-left:4px">${daysToExp>0?daysToExp+' días':'Vencida'}</span></div></div>`;
+      const vencMM=cc.fecha_vencimiento.substring(5,7);
+      const vencYY=cc.fecha_vencimiento.substring(0,4);
+      expiryInfo=`<div><div class="stat-label">Vencimiento</div><div style="font-size:14px;font-weight:600">${vencMM}/${vencYY} <span class="badge ${daysToExp<=30?'badge-danger':daysToExp<=90?'badge-warning':'badge-neutral'}" style="margin-left:4px">${daysToExp>0?daysToExp+' días':'Vencida'}</span></div></div>`;
     }
 
     return `<div>
@@ -571,11 +572,12 @@ function viewTarjetas() {
       <div class="form-group"><label class="form-label">Banco / Nombre</label><input class="form-input" id="ncBanco" placeholder="Ej: BHD, Popular..."></div>
       <div class="form-group"><label class="form-label">Tipo</label><select class="form-select" id="ncTipo" onchange="toggleCardFields()"><option value="credito">💳 Crédito</option><option value="debito">🏧 Débito</option></select></div>
       <div class="form-group"><label class="form-label">Color</label><div class="flex gap-2 flex-wrap" style="margin-bottom:8px">${colorPicker}</div><input type="hidden" id="ncColor" value="#2d5a27"><div id="ncColorPreview" style="width:100%;height:8px;border-radius:4px;background:#2d5a27"></div></div>
+      <div class="form-group"><label class="form-label">Saldo Actual</label><input class="form-input" type="number" id="ncSaldo" placeholder="0.00"></div>
       <div class="form-group ncCreditField"><label class="form-label">Límite Aprobado</label><input class="form-input" type="number" id="ncLimite" placeholder="0.00"></div>
       <div class="form-group ncCreditField"><label class="form-label">Monto Sobregiro</label><input class="form-input" type="number" id="ncSobregiro" placeholder="0.00"></div>
       <div class="form-group ncCreditField"><label class="form-label">Día de Corte</label><input class="form-input" type="number" id="ncCorte" placeholder="1-31" min="1" max="31"></div>
       <div class="form-group ncCreditField"><label class="form-label">Días Límite de Pago</label><input class="form-input" type="number" id="ncDiasPago" placeholder="Ej: 25"></div>
-      <div class="form-group ncDebitField" style="display:none"><label class="form-label">Fecha de Vencimiento</label><input class="form-input" type="date" id="ncVencTarjeta"></div>
+      <div class="form-group ncDebitField" style="display:none"><label class="form-label">Vencimiento (MM/AAAA)</label><div class="flex gap-2"><select class="form-select" id="ncVencMes" style="width:100px">${[...Array(12)].map((_,i)=>`<option value="${String(i+1).padStart(2,'0')}">${String(i+1).padStart(2,'0')}</option>`).join('')}</select><input class="form-input" type="number" id="ncVencAnio" placeholder="2028" style="width:100px"></div></div>
     </div>
     <div class="flex gap-2 mt-4">
       <button class="btn btn-primary" onclick="saveNewCard()">💾 Guardar Tarjeta</button>
@@ -945,7 +947,7 @@ function viewIngresos() {
       <div class="form-group"><label class="form-label">Monto (RD$)</label><input class="form-input" type="number" id="ingMonto" placeholder="0.00"></div>
       <div class="form-group"><label class="form-label">Fuente</label><input class="form-input" id="ingFuente" placeholder="Ej: Nómina, Cliente X..."></div>
       <div class="form-group"><label class="form-label">Tipo</label><select class="form-select" id="ingTipo"><option value="nomina">💼 Nómina</option><option value="iguala">🏢 Iguala</option><option value="cliente">🎬 Cliente</option><option value="freelance">💻 Freelance</option><option value="otro">💵 Otro</option></select></div>
-      <div class="form-group"><label class="form-label">Destino</label><select class="form-select" id="ingDestino"><option value="efectivo">💵 Efectivo</option>${cardOpts}</select></div>
+      <div class="form-group"><label class="form-label">Destino</label><select class="form-select" id="ingDestino" onchange="autoFillFromCard()"><option value="efectivo">💵 Efectivo</option>${cardOpts}</select></div>
       <div class="form-group"><label class="form-label">Fecha</label><input class="form-input" type="date" id="ingFecha" value="${today()}"></div>
       <div class="form-group"><label class="form-label">Nota (opcional)</label><input class="form-input" id="ingNota" placeholder="Detalle..."></div>
     </div>
@@ -1365,6 +1367,19 @@ async function updateBudgetFreq() {}
 async function updateBudget(catId, value) { updateBudgetRange(catId, 'max', value); }
 function updateBudgetDisplay() {}
 
+function autoFillFromCard() {
+  const destino=$('#ingDestino').value;
+  if(destino==='efectivo') return;
+  const cc=state.creditCards.find(c=>c.id===destino);
+  if(cc&&cc.tipo_tarjeta==='debito') {
+    const montoInput=$('#ingMonto');
+    if(montoInput&&(!montoInput.value||Number(montoInput.value)===0)) {
+      montoInput.value=Number(cc.saldo_actual)||'';
+      montoInput.focus();
+    }
+  }
+}
+
 async function addIngreso() {
   const monto=Number($('#ingMonto').value);
   if(!monto||monto<=0) return;
@@ -1459,20 +1474,31 @@ async function saveNewCard() {
   const tipo=$('#ncTipo').value;
   const isCredit=tipo==='credito';
   const color=$('#ncColor').value||'#2d5a27';
+  const saldo=Number($('#ncSaldo').value)||0;
   const id=banco.toLowerCase().replace(/\s+/g,'-')+'-'+Date.now().toString(36);
   const displayName=(isCredit?'TC ':'TD ')+banco;
 
+  let fechaVenc=null;
+  if(!isCredit) {
+    const mes=$('#ncVencMes')?.value;
+    const anio=$('#ncVencAnio')?.value;
+    if(mes&&anio) fechaVenc=`${anio}-${mes}-01`;
+  }
+
   const data={
     id, banco, tipo_tarjeta:tipo, nombre_display:displayName,
-    saldo_actual:0, color,
+    saldo_actual:saldo, color,
     monto_aprobado:isCredit?(Number($('#ncLimite').value)||0):0,
     monto_sobregiro:isCredit?(Number($('#ncSobregiro').value)||0):0,
     fecha_corte:isCredit?(Number($('#ncCorte').value)||1):1,
     dias_limite_pago:isCredit?(Number($('#ncDiasPago').value)||25):0,
-    fecha_vencimiento:(!isCredit&&$('#ncVencTarjeta').value)?$('#ncVencTarjeta').value:null,
+    fecha_vencimiento:fechaVenc,
   };
-  await db.from('credit_cards').insert(data);
-  await loadAll(); render();
+  try {
+    const {error}=await db.from('credit_cards').insert(data);
+    if(error) { console.error(error); alert('Error al guardar: '+error.message); return; }
+    await loadAll(); render();
+  } catch(e) { console.error(e); alert('Error: '+e.message); }
 }
 
 async function deleteCard(id) {
@@ -1504,7 +1530,7 @@ function showEditCard(id) {
         <div class="form-group"><label class="form-label">Día de Corte</label><input class="form-input" type="number" id="ecCorte" value="${cc.fecha_corte}" min="1" max="31"></div>
         <div class="form-group"><label class="form-label">Días Límite Pago</label><input class="form-input" type="number" id="ecDiasPago" value="${cc.dias_limite_pago}"></div>
         `:`
-        <div class="form-group"><label class="form-label">Fecha Vencimiento Tarjeta</label><input class="form-input" type="date" id="ecVencTarjeta" value="${cc.fecha_vencimiento||''}"></div>
+        <div class="form-group"><label class="form-label">Vencimiento (MM/AAAA)</label><div class="flex gap-2"><select class="form-select" id="ecVencMes" style="width:100px">${[...Array(12)].map((_,i)=>{const m=String(i+1).padStart(2,'0');const sel=cc.fecha_vencimiento&&cc.fecha_vencimiento.substring(5,7)===m?'selected':'';return '<option value="'+m+'" '+sel+'>'+m+'</option>';}).join('')}</select><input class="form-input" type="number" id="ecVencAnio" value="${cc.fecha_vencimiento?cc.fecha_vencimiento.substring(0,4):''}" placeholder="2028" style="width:100px"></div></div>
         `}
       </div>
       <div class="flex gap-2" style="justify-content:flex-end;margin-top:20px">
@@ -1530,7 +1556,9 @@ async function saveEditCard(id, isCredit) {
     data.fecha_corte=Number($('#ecCorte').value)||1;
     data.dias_limite_pago=Number($('#ecDiasPago').value)||25;
   } else {
-    data.fecha_vencimiento=$('#ecVencTarjeta')?.value||null;
+    const mes=$('#ecVencMes')?.value;
+    const anio=$('#ecVencAnio')?.value;
+    data.fecha_vencimiento=(mes&&anio)?`${anio}-${mes}-01`:null;
   }
   await db.from('credit_cards').update(data).eq('id',id);
   $('#editCardModal').remove();
