@@ -206,6 +206,8 @@ let state = {
   budgetCategories: [],
   variableIncome: [],
   savingsDeposits: [],
+  ingresos: [],
+  plantillas: [],
   user: null,
 };
 
@@ -242,7 +244,7 @@ function clamp(v,min,max) { return Math.max(min,Math.min(max,v)); }
 // DATA LOADING
 // ============================================================
 async function loadAll() {
-  const [tx,cc,lo,lp,bc,vi,sd,st] = await Promise.all([
+  const [tx,cc,lo,lp,bc,vi,sd,st,ing,pl] = await Promise.all([
     db.from('transactions').select('*').order('fecha',{ascending:false}),
     db.from('credit_cards').select('*'),
     db.from('loans').select('*'),
@@ -251,6 +253,8 @@ async function loadAll() {
     db.from('variable_income').select('*').order('fecha',{ascending:false}),
     db.from('savings_deposits').select('*').order('fecha',{ascending:true}),
     db.from('settings').select('*'),
+    db.from('ingresos').select('*').order('fecha',{ascending:false}),
+    db.from('ingreso_plantillas').select('*').order('orden'),
   ]);
   state.transactions = tx.data||[];
   state.creditCards = cc.data||[];
@@ -259,6 +263,8 @@ async function loadAll() {
   state.budgetCategories = bc.data||[];
   state.variableIncome = vi.data||[];
   state.savingsDeposits = sd.data||[];
+  state.ingresos = ing.data||[];
+  state.plantillas = pl.data||[];
   const themeSetting = (st.data||[]).find(s=>s.key==='theme');
   if(themeSetting) { const v = themeSetting.value; state.theme = (typeof v === 'string') ? v.replace(/"/g,'') : (v || 'light'); }
   document.documentElement.setAttribute('data-theme', state.theme);
@@ -338,9 +344,8 @@ function renderMain() {
 function viewDashboard() {
   const cm=curMonth(), mtx=state.transactions.filter(t=>t.fecha?.startsWith(cm));
   const gastos=mtx.filter(t=>t.tipo==='gasto').reduce((s,t)=>s+Number(t.monto),0);
-  const ded=calcDR(100000), ingresosFijos=ded.neto+12500;
-  const ingresosVar=state.variableIncome.filter(v=>v.fecha?.startsWith(cm)).reduce((s,v)=>s+Number(v.monto),0);
-  const totalIng=ingresosFijos+ingresosVar;
+  const monthIngresos=state.ingresos.filter(v=>v.fecha?.startsWith(cm));
+  const totalIng=monthIngresos.reduce((s,v)=>s+Number(v.monto),0);
   const deudaTC=state.creditCards.reduce((s,c)=>s+Number(c.saldo_actual),0);
   const deudaP=state.loans.reduce((s,l)=>s+Number(l.monto_adeudado),0);
   const fijosCats=state.budgetCategories.filter(c=>(c.tipo_gasto||'fijo')!=='periodico');
@@ -870,46 +875,75 @@ function viewPresupuesto() {
 // ============================================================
 function viewIngresos() {
   const ded=calcDR(100000), cm=curMonth();
-  const monthVar=state.variableIncome.filter(v=>v.fecha?.startsWith(cm));
-  const totalVar=monthVar.reduce((s,v)=>s+Number(v.monto),0);
+  const monthIng=state.ingresos.filter(v=>v.fecha?.startsWith(cm));
+  const totalMes=monthIng.reduce((s,v)=>s+Number(v.monto),0);
+  const cardOpts=state.creditCards.map(c=>`<option value="${c.id}">${c.tipo_tarjeta==='debito'?'🏧':'💳'} ${c.nombre_display||c.banco}</option>`).join('');
+  
+  // By source type
+  const byType={};
+  monthIng.forEach(v=>{const k=v.tipo_fuente||'otro';byType[k]=(byType[k]||0)+Number(v.monto);});
+  const typeLabels={nomina:'💼 Nómina',iguala:'🏢 Iguala',cliente:'🎬 Cliente',freelance:'💻 Freelance',otro:'💵 Otro'};
 
-  // Chart data
+  // Chart: last 6 months
   const last6=[];
-  for(let i=5;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);const ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');const vi=state.variableIncome.filter(v=>v.fecha?.startsWith(ym)).reduce((s,v)=>s+Number(v.monto),0);last6.push({month:MONTHS_ES[d.getMonth()],fijo:ded.neto+12500,variable:vi});}
-  const maxI=Math.max(...last6.map(m=>m.fijo+m.variable),1);
-  const bars=last6.map(m=>`<div class="chart-col"><div class="chart-val">${Math.round((m.fijo+m.variable)/1000)}K</div><div class="chart-bar" style="height:${(m.variable/maxI)*130}px;background:var(--warning)"></div><div class="chart-bar" style="height:${(m.fijo/maxI)*130}px;background:var(--accent);border-radius:0"></div><div class="chart-label">${m.month}</div></div>`).join('');
+  for(let i=5;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);const ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');const total=state.ingresos.filter(v=>v.fecha?.startsWith(ym)).reduce((s,v)=>s+Number(v.monto),0);last6.push({month:MONTHS_ES[d.getMonth()],total});}
+  const maxI=Math.max(...last6.map(m=>m.total),1);
+  const bars=last6.map(m=>`<div class="chart-col"><div class="chart-val">${m.total>0?Math.round(m.total/1000)+'K':''}</div><div class="chart-bar" style="height:${Math.max(2,(m.total/maxI)*130)}px;background:var(--accent)"></div><div class="chart-label">${m.month}</div></div>`).join('');
 
-  const history=state.variableIncome.slice(0,20).map(v=>`<tr><td class="mono" style="font-size:12px">${fdate(v.fecha)}</td><td>${v.fuente||'—'}</td><td class="text-right mono fw-700" style="color:var(--success)">+${money(v.monto)}</td><td><button class="btn-icon" onclick="deleteVarIncome('${v.id}')">🗑</button></td></tr>`).join('');
+  // Quick templates
+  const templates=state.plantillas.map(p=>`<button class="btn btn-ghost" onclick="useTemplate('${p.id}')" style="padding:12px 16px"><div style="font-size:20px;margin-bottom:4px">${p.icono}</div><div style="font-size:12px;font-weight:600">${p.nombre}</div>${Number(p.monto_default)>0?`<div style="font-size:11px;color:var(--text-muted)">${money(p.monto_default)}</div>`:''}</button>`).join('');
 
-  return `<div class="page-header"><h2>Ingresos</h2><p>Ingresos fijos, deducciones RD y seguimiento de ingresos variables</p></div>
+  // History
+  const history=state.ingresos.slice(0,30).map(v=>{
+    const dest=v.destino==='efectivo'?'💵 Efectivo':(()=>{const c=state.creditCards.find(x=>x.id===v.destino);return c?(c.tipo_tarjeta==='debito'?'🏧':'💳')+' '+(c.nombre_display||c.banco):'💵';})();
+    const typeLbl=typeLabels[v.tipo_fuente]||'💵 Otro';
+    return `<tr><td class="mono" style="font-size:12px">${fdate(v.fecha)}</td><td style="font-weight:600">${v.fuente||'—'}</td><td><span class="badge badge-neutral">${typeLbl}</span></td><td><span class="badge badge-neutral">${dest}</span></td><td>${v.nota||''}</td><td class="text-right mono fw-700" style="color:var(--success)">+${money(v.monto)}</td><td><button class="btn-icon" onclick="deleteIngreso('${v.id}')">🗑</button></td></tr>`;
+  }).join('');
+
+  // By type breakdown
+  const typeBreakdown=Object.entries(byType).map(([k,v])=>`<div class="flex-between" style="padding:6px 0;border-bottom:1px solid var(--border)"><span style="font-size:13px">${typeLabels[k]||k}</span><span class="mono fw-700">${money(v)}</span></div>`).join('');
+
+  return `<div class="page-header"><h2>Ingresos</h2><p>${monthLabel(cm)} — Registro real de todos tus ingresos</p></div>
   <div class="grid-3 mb-6">
-    <div class="stat-card"><div class="stat-label">Sueldo Neto</div><div class="stat-value positive">${money(ded.neto)}</div><div class="stat-sub">Después de deducciones</div></div>
-    <div class="stat-card"><div class="stat-label">Iguala Orion</div><div class="stat-value positive">${money(12500)}</div><div class="stat-sub">Ingreso fijo mensual</div></div>
-    <div class="stat-card"><div class="stat-label">Variables este mes</div><div class="stat-value positive">${money(totalVar)}</div><div class="stat-sub">${monthVar.length} ingresos</div></div>
+    <div class="stat-card"><div class="stat-label">Ingresos del Mes</div><div class="stat-value positive">${money(totalMes)}</div><div class="stat-sub">${monthIng.length} registros</div></div>
+    <div class="stat-card"><div class="stat-label">Promedio Mensual (6m)</div><div class="stat-value positive">${money(last6.reduce((s,m)=>s+m.total,0)/6)}</div></div>
+    <div class="stat-card"><div class="stat-label">Registros este Mes</div><div class="stat-value">${monthIng.length}</div></div>
   </div>
+  
+  ${templates.length>0?`<div class="card mb-6"><div class="card-title">⚡ Registro Rápido</div><div class="flex gap-4 flex-wrap">${templates}</div></div>`:''}
+
+  <div class="card mb-6">
+    <div class="card-title">Registrar Ingreso</div>
+    <div class="grid-2" style="gap:12px">
+      <div class="form-group"><label class="form-label">Monto (RD$)</label><input class="form-input" type="number" id="ingMonto" placeholder="0.00"></div>
+      <div class="form-group"><label class="form-label">Fuente</label><input class="form-input" id="ingFuente" placeholder="Ej: Nómina, Cliente X..."></div>
+      <div class="form-group"><label class="form-label">Tipo</label><select class="form-select" id="ingTipo"><option value="nomina">💼 Nómina</option><option value="iguala">🏢 Iguala</option><option value="cliente">🎬 Cliente</option><option value="freelance">💻 Freelance</option><option value="otro">💵 Otro</option></select></div>
+      <div class="form-group"><label class="form-label">Destino</label><select class="form-select" id="ingDestino"><option value="efectivo">💵 Efectivo</option>${cardOpts}</select></div>
+      <div class="form-group"><label class="form-label">Fecha</label><input class="form-input" type="date" id="ingFecha" value="${today()}"></div>
+      <div class="form-group"><label class="form-label">Nota (opcional)</label><input class="form-input" id="ingNota" placeholder="Detalle..."></div>
+    </div>
+    <button class="btn btn-primary mt-4" onclick="addIngreso()">➕ Registrar Ingreso</button>
+  </div>
+
   <div class="grid-2 mb-6">
-    <div class="card"><div class="card-title">Deducciones Legales (RD)</div>
+    <div class="card"><div class="card-title">Ingresos por Tipo (${monthLabel(cm)})</div>${typeBreakdown.length>0?typeBreakdown:'<div style="color:var(--text-muted);font-size:13px;padding:12px 0">Sin ingresos este mes</div>'}
+      <div class="flex-between" style="padding:8px 0;font-weight:700;border-top:2px solid var(--border);margin-top:4px"><span>Total</span><span class="mono" style="color:var(--success)">${money(totalMes)}</span></div>
+    </div>
+    <div class="card"><div class="card-title">Referencia: Deducciones RD</div>
+      <div style="font-size:13px;color:var(--text-muted);margin-bottom:8px">Para calcular cuánto esperar de nómina</div>
       <div style="font-size:13px">
-        <div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>Salario Bruto</span><span class="mono fw-700">${money(100000)}</span></div>
-        <div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>AFP (2.87%)</span><span class="mono" style="color:var(--danger)">-${money(ded.afp)}</span></div>
-        <div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>SFS (3.04%)</span><span class="mono" style="color:var(--danger)">-${money(ded.sfs)}</span></div>
-        <div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>ISR</span><span class="mono" style="color:var(--danger)">-${money(ded.isr)}</span></div>
-        <div class="flex-between" style="padding:10px 0;font-weight:700"><span>Neto</span><span class="mono" style="color:var(--success)">${money(ded.neto)}</span></div>
+        <div class="flex-between" style="padding:6px 0;border-bottom:1px solid var(--border)"><span>Salario Bruto</span><span class="mono fw-700">${money(100000)}</span></div>
+        <div class="flex-between" style="padding:6px 0;border-bottom:1px solid var(--border)"><span>AFP (2.87%)</span><span class="mono" style="color:var(--danger)">-${money(ded.afp)}</span></div>
+        <div class="flex-between" style="padding:6px 0;border-bottom:1px solid var(--border)"><span>SFS (3.04%)</span><span class="mono" style="color:var(--danger)">-${money(ded.sfs)}</span></div>
+        <div class="flex-between" style="padding:6px 0;border-bottom:1px solid var(--border)"><span>ISR</span><span class="mono" style="color:var(--danger)">-${money(ded.isr)}</span></div>
+        <div class="flex-between" style="padding:8px 0;font-weight:700"><span>Neto Estimado</span><span class="mono" style="color:var(--success)">${money(ded.neto)}</span></div>
       </div>
     </div>
-    <div class="card"><div class="card-title">Ingresos Últimos 6 Meses</div><div class="chart-bars">${bars}</div>
-      <div class="flex gap-4 mt-4" style="justify-content:center"><div class="flex" style="align-items:center;gap:6px"><div style="width:12px;height:12px;border-radius:2px;background:var(--accent)"></div><span style="font-size:11px;color:var(--text-muted)">Fijo</span></div><div class="flex" style="align-items:center;gap:6px"><div style="width:12px;height:12px;border-radius:2px;background:var(--warning)"></div><span style="font-size:11px;color:var(--text-muted)">Variable</span></div></div>
-    </div>
   </div>
-  <div class="card mb-6"><div class="card-title">Registrar Ingreso Variable</div>
-    <div class="grid-3" style="gap:12px">
-      <div class="form-group"><label class="form-label">Monto (RD$)</label><input class="form-input" type="number" id="viMonto" placeholder="0.00"></div>
-      <div class="form-group"><label class="form-label">Fuente / Cliente</label><input class="form-input" id="viFuente" placeholder="Ej: Producción El PioRD"></div>
-      <div class="form-group"><label class="form-label">Fecha</label><input class="form-input" type="date" id="viFecha" value="${today()}"></div>
-    </div>
-    <button class="btn btn-primary mt-4" onclick="addVarIncome()">➕ Registrar Ingreso</button>
-  </div>
-  <div class="card"><div class="card-title">Historial de Ingresos Variables</div>${history.length>0?`<div class="table-container"><table><thead><tr><th>Fecha</th><th>Fuente</th><th class="text-right">Monto</th><th></th></tr></thead><tbody>${history}</tbody></table></div>`:'<div class="empty-state"><div class="empty-icon">💵</div><p>No hay ingresos variables registrados</p></div>'}</div>`;
+
+  <div class="card"><div class="card-title">Ingresos Últimos 6 Meses</div><div class="chart-bars">${bars}</div></div>
+
+  <div class="card mt-4"><div class="card-title">Historial de Ingresos</div>${history.length>0?`<div class="table-container"><table><thead><tr><th>Fecha</th><th>Fuente</th><th>Tipo</th><th>Destino</th><th>Nota</th><th class="text-right">Monto</th><th></th></tr></thead><tbody>${history}</tbody></table></div>`:'<div class="empty-state"><div class="empty-icon">💵</div><p>No hay ingresos registrados</p></div>'}</div>`;
 }
 
 // ============================================================
@@ -932,31 +966,40 @@ function viewAhorros() {
 // FLUJO DE CAJA
 // ============================================================
 function viewFlujo() {
-  const ded=calcDR(100000), fijos=ded.neto+12500;
+  // Average monthly income from last 3 months of real data
   const last3=[];for(let i=2;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);last3.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));}
-  const avgVar=state.variableIncome.filter(v=>last3.some(m=>v.fecha?.startsWith(m))).reduce((s,v)=>s+Number(v.monto),0)/3;
-  const oblLoans=state.loans.reduce((s,l)=>s+Number(l.cuota_mensual),0);
-  const budgetT=state.budgetCategories.reduce((s,c)=>s+Number(c.presupuesto),0);
+  const last3Income=state.ingresos.filter(v=>last3.some(m=>v.fecha?.startsWith(m)));
+  const avgIncome=last3Income.reduce((s,v)=>s+Number(v.monto),0)/3;
+  
+  // By type averages
+  const typeLabels={nomina:'💼 Nómina',iguala:'🏢 Iguala',cliente:'🎬 Clientes',freelance:'💻 Freelance',otro:'💵 Otros'};
+  const byType={};
+  last3Income.forEach(v=>{const k=v.tipo_fuente||'otro';byType[k]=(byType[k]||0)+Number(v.monto);});
+  Object.keys(byType).forEach(k=>byType[k]=byType[k]/3);
 
-  const projs=[30,60,90].map(days=>{const m=days/30;const ing=(fijos+avgVar)*m;const obl=(oblLoans+budgetT)*m;return{days,ing,obl,net:ing-obl};});
+  const oblLoans=state.loans.filter(l=>l.estado!=='pagado'&&l.direccion!=='otorgado').reduce((s,l)=>s+Number(l.cuota_mensual),0);
+  const fijoCats=state.budgetCategories.filter(c=>(c.tipo_gasto||'fijo')!=='periodico');
+  const budgetT=fijoCats.reduce((s,c)=>s+(Number(c.presupuesto_max)||Number(c.presupuesto)||0),0);
 
-  return `<div class="page-header"><h2>Flujo de Caja Proyectado</h2><p>Proyección a 30, 60 y 90 días basada en tus patrones</p></div>
+  const projs=[30,60,90].map(days=>{const m=days/30;const ing=avgIncome*m;const obl=(oblLoans+budgetT)*m;return{days,ing,obl,net:ing-obl};});
+
+  const incomeBreakdown=Object.entries(byType).map(([k,v])=>`<div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>${typeLabels[k]||k}</span><span class="mono fw-700">${money(v)}</span></div>`).join('');
+
+  return `<div class="page-header"><h2>Flujo de Caja Proyectado</h2><p>Proyección basada en tu promedio real de ingresos (últimos 3 meses)</p></div>
   <div class="grid-3 mb-6">${projs.map(p=>`<div class="card"><div class="card-title">Proyección ${p.days} Días</div>
     <div class="flex-between" style="padding:6px 0"><span style="font-size:13px;color:var(--text-secondary)">Ingresos estimados</span><span class="mono fw-700" style="color:var(--success)">${money(p.ing)}</span></div>
     <div class="flex-between" style="padding:6px 0"><span style="font-size:13px;color:var(--text-secondary)">Obligaciones</span><span class="mono fw-700" style="color:var(--danger)">${money(p.obl)}</span></div>
     <div style="border-top:2px solid var(--border);margin-top:8px;padding-top:8px"><div class="flex-between"><span class="fw-700" style="font-size:14px">Flujo Neto</span><span class="mono fw-700" style="font-size:18px;color:${p.net>=0?'var(--success)':'var(--danger)'}">${money(p.net)}</span></div></div>
   </div>`).join('')}</div>
   <div class="grid-2 mb-6">
-    <div class="card"><div class="card-title">Composición de Ingresos Mensuales</div><div style="font-size:13px">
-      <div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>Sueldo Neto</span><span class="mono fw-700">${money(ded.neto)}</span></div>
-      <div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>Iguala Orion</span><span class="mono fw-700">${money(12500)}</span></div>
-      <div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>Promedio Variable (3m)</span><span class="mono fw-700">${money(avgVar)}</span></div>
-      <div class="flex-between" style="padding:10px 0;font-weight:700;font-size:14px"><span>Total Estimado</span><span class="mono" style="color:var(--success)">${money(fijos+avgVar)}</span></div>
+    <div class="card"><div class="card-title">Promedio Mensual de Ingresos (3m)</div><div style="font-size:13px">
+      ${incomeBreakdown||'<div style="color:var(--text-muted);padding:8px 0">Sin datos suficientes</div>'}
+      <div class="flex-between" style="padding:10px 0;font-weight:700;font-size:14px;border-top:2px solid var(--border);margin-top:4px"><span>Total Promedio</span><span class="mono" style="color:var(--success)">${money(avgIncome)}</span></div>
     </div></div>
     <div class="card"><div class="card-title">Obligaciones Fijas Mensuales</div><div style="font-size:13px">
-      ${state.loans.map(l=>`<div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>${l.nombre}</span><span class="mono fw-700">${money(l.cuota_mensual)}</span></div>`).join('')}
+      ${state.loans.filter(l=>l.estado!=='pagado'&&l.direccion!=='otorgado').map(l=>`<div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>${l.nombre}</span><span class="mono fw-700">${money(l.cuota_mensual)}</span></div>`).join('')}
       <div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border)"><span>Presupuesto Hogar</span><span class="mono fw-700">${money(budgetT)}</span></div>
-      <div class="flex-between" style="padding:10px 0;font-weight:700;font-size:14px"><span>Total Obligaciones</span><span class="mono" style="color:var(--danger)">${money(oblLoans+budgetT)}</span></div>
+      <div class="flex-between" style="padding:10px 0;font-weight:700;font-size:14px;border-top:2px solid var(--border);margin-top:4px"><span>Total Obligaciones</span><span class="mono" style="color:var(--danger)">${money(oblLoans+budgetT)}</span></div>
     </div></div>
   </div>`;
 }
@@ -968,8 +1011,7 @@ function viewAnalisis() {
   const ded=calcDR(100000),cm=curMonth();
   const mtx=state.transactions.filter(t=>t.fecha?.startsWith(cm));
   const gastos=mtx.filter(t=>t.tipo==='gasto').reduce((s,t)=>s+Number(t.monto),0);
-  const ingVar=state.variableIncome.filter(v=>v.fecha?.startsWith(cm)).reduce((s,v)=>s+Number(v.monto),0);
-  const totalIng=ded.neto+12500+ingVar;
+  const totalIng=state.ingresos.filter(v=>v.fecha?.startsWith(cm)).reduce((s,v)=>s+Number(v.monto),0);
   const deudaTC=state.creditCards.reduce((s,c)=>s+Number(c.saldo_actual),0);
   const deudaP=state.loans.reduce((s,l)=>s+Number(l.monto_adeudado),0);
   const limTC=state.creditCards.reduce((s,c)=>s+Number(c.monto_aprobado),0);
@@ -1296,10 +1338,62 @@ async function updateBudgetFreq() {}
 async function updateBudget(catId, value) { updateBudgetRange(catId, 'max', value); }
 function updateBudgetDisplay() {}
 
-async function addVarIncome() {
-  const monto=Number($('#viMonto').value);
+async function addIngreso() {
+  const monto=Number($('#ingMonto').value);
   if(!monto||monto<=0) return;
-  const fuente=$('#viFuente').value, fecha=$('#viFecha').value;
+  const fuente=$('#ingFuente').value.trim();
+  const tipo_fuente=$('#ingTipo').value;
+  const destino=$('#ingDestino').value;
+  const fecha=$('#ingFecha').value;
+  const nota=$('#ingNota').value.trim();
+  
+  await db.from('ingresos').insert({monto,fuente:fuente||tipo_fuente,tipo_fuente,destino,fecha,nota:nota||null});
+  
+  // Update debit card balance if destination is a card
+  if(destino!=='efectivo') {
+    const cc=state.creditCards.find(c=>c.id===destino);
+    if(cc) {
+      const newSaldo=Number(cc.saldo_actual)+monto;
+      await db.from('credit_cards').update({saldo_actual:newSaldo}).eq('id',destino);
+    }
+  }
+  await loadAll(); render();
+}
+
+async function deleteIngreso(id) {
+  const ing=state.ingresos.find(v=>v.id===id);
+  if(!ing) return;
+  // Reverse card balance if it was deposited to a card
+  if(ing.destino&&ing.destino!=='efectivo') {
+    const cc=state.creditCards.find(c=>c.id===ing.destino);
+    if(cc) {
+      const newSaldo=Math.max(0,Number(cc.saldo_actual)-Number(ing.monto));
+      await db.from('credit_cards').update({saldo_actual:newSaldo}).eq('id',ing.destino);
+    }
+  }
+  await db.from('ingresos').delete().eq('id',id);
+  await loadAll(); render();
+}
+
+function useTemplate(templateId) {
+  const pl=state.plantillas.find(p=>p.id===templateId);
+  if(!pl) return;
+  const montoInput=$('#ingMonto');
+  const fuenteInput=$('#ingFuente');
+  const tipoSelect=$('#ingTipo');
+  const destinoSelect=$('#ingDestino');
+  if(montoInput&&Number(pl.monto_default)>0) montoInput.value=pl.monto_default;
+  if(fuenteInput) fuenteInput.value=pl.fuente||'';
+  if(tipoSelect) tipoSelect.value=pl.tipo_fuente||'otro';
+  if(destinoSelect&&pl.destino_default) destinoSelect.value=pl.destino_default;
+  if(montoInput) montoInput.focus();
+}
+
+// Keep old functions for backwards compatibility
+async function addVarIncome() {
+  const monto=Number($('#viMonto')?.value);
+  if(!monto||monto<=0) return;
+  const fuente=$('#viFuente')?.value, fecha=$('#viFecha')?.value;
   await db.from('variable_income').insert({monto,fuente,fecha});
   await loadAll(); render();
 }
